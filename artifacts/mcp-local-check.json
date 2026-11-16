@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "transport": "local MCP",
+  "error": "No fue posible conectar al MCP Composio desde esta Mac."
+}

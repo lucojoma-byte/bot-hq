@@ -1,0 +1,21 @@
+{
+  "bot-hq": {
+    "repo": "https://github.com/nickvasilescu/bot-hq",
+    "fork": "https://github.com/lucojoma-byte/bot-hq",
+    "commit": "decf9a215cddd8792a5f20f4a11a87d4dffa6d15",
+    "acquisition": "snapshot UTF8 por conector GitHub; git clone bloqueado DNS",
+    "files": 173
+  },
+  "grokbot-clone": {
+    "commit": "7ee6a7ed8464311dbb467bb9ee7c76d9286e56be",
+    "acquisition": "snapshot parcial de referencia"
+  },
+  "bops": {
+    "commit": "6e99a5ef309004124be16f7834efa3336ac179c5",
+    "acquisition": "documentaci\u00f3n de referencia; c\u00f3digo no integrado"
+  },
+  "hermes-agent": {
+    "commit": "4162ecf11f611400fa6e5c42d2f360188ce50b39",
+    "acquisition": "documentaci\u00f3n de referencia; runtime instalado se usa por lectura"
+  }
+}
