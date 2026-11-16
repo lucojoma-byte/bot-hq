@@ -37,12 +37,18 @@ GLOBAL_HOME = Path('/Users/m4/.hermes')
 CODEX_URL = 'https://chatgpt.com/backend-api/codex'
 DEFAULT_MODEL = 'gpt-5.6-terra'
 MAX_INPUT = 2_000_000
-BASE_TOOLS = frozenset({'memory', 'save_file', 'list_files', 'task_create', 'drive_list', 'drive_read', 'sheets_read',
+BASE_TOOLS = frozenset({'memory', 'save_file', 'list_files', 'task_create', 'task_complete', 'assign_task',
+                        'drive_list', 'drive_read', 'sheets_read',
                         'gmail_search', 'gmail_read', 'calendar_list', 'instagram_read', 'github_read',
                         'request_action', 'message_agent'})
+# Políticas de turno que fija el SERVIDOR (el modelo no las puede cambiar):
+#   clean       mensaje entre Guardián y Casa Kiraz: sin memoria, sin historial, sin archivos ni apps.
+#   no_persist  Holding atendiendo a un negocio hijo: no escribe memoria ni archivos.
+POLICY_TOOLS = {'clean': frozenset({'task_create', 'task_complete'}),
+                'no_persist': BASE_TOOLS - {'memory', 'save_file'}}
+SEEN = {'elements': {}, 'app': '', 'window': ''}   # lo último que computer_use capturó en pantalla
 TOOL_NAMES = set(BASE_TOOLS)
 ALLOWED_PORTS = (8787, 8788)  # producción y ensayo, ambos solo en 127.0.0.1
-COMPUTER_FREE_ACTIONS = frozenset({'capture', 'list_apps', 'list_windows', 'wait'})
 ACTIONS_HELP = ('gmail_send/gmail_draft {para, asunto, cuerpo, cc?, bcc?}; '
                 'calendar_create {titulo, inicio, fin (AAAA-MM-DDTHH:MM), zona?, descripcion?, lugar?, invitados?}; '
                 'instagram_publish {imagen_url (https pública), texto}; drive_delete {file_id}; '
@@ -99,10 +105,10 @@ def prepare(request):
     return home, workspace
 
 
-def configuration(home, model, computer=False):
+def configuration(home, model, computer=False, memory=True):
     """Write only our own allowlisted configuration; never merge global config."""
     import yaml
-    toolsets = ['memory', 'joe_hq'] + (['computer_use'] if computer else [])
+    toolsets = (['memory'] if memory else []) + ['joe_hq'] + (['computer_use'] if computer else [])
     disabled = ['terminal', 'file', 'browser', 'code_execution', 'delegation', 'cronjob', 'skills',
                 'connections', 'web', 'tts', 'stt'] + ([] if computer else ['computer_use'])
     cfg = {
@@ -114,7 +120,7 @@ def configuration(home, model, computer=False):
         'agent': {'max_turns': 40 if computer else 14, 'environment_probe': False, 'coding_context': False,
                   'bot_mode_protocol': False, 'verify_on_stop': False,
                   'api_max_retries': 1, 'disabled_toolsets': disabled},
-        'memory': {'memory_enabled': True, 'user_profile_enabled': True},
+        'memory': {'memory_enabled': bool(memory), 'user_profile_enabled': bool(memory)},
         'plugins': {'enabled': []}, 'mcp_servers': {},
         'tools': {'tool_search': {'enabled': False}},
         'skills': {'external_dirs': [], 'inline_shell': False},
@@ -158,6 +164,10 @@ def tool_definitions():
                {'path': text, 'content': text}, ['path', 'content']),
         schema('list_files', 'Lista únicamente la biblioteca aislada de este bot.', {}, []),
         schema('task_create', 'Crea una tarea local para este bot.', {'title': text, 'description': text}, ['title']),
+        schema('task_complete', 'Marca como completa una tarea de TU lista (usa el task_id que recibiste).', {'task_id': text}, ['task_id']),
+        schema('assign_task', 'Asigna una tarea a OTRO bot: aparece en su lista de tareas y se le avisa para que la trabaje. '
+               'Su respuesta te llega después como mensaje nuevo. Entre Guardián y Casa Kiraz, Joe aprueba el texto antes de entregarlo.',
+               {'target': text, 'title': text, 'details': text}, ['target', 'title']),
         schema('drive_list', 'Lista archivos de la carpeta Drive de TU negocio (sin folder_id: carpetas raíz). No acepta carpetas de otros negocios.',
                {'folder_id': text}, []),
         schema('drive_read', 'Lee como texto un Google Doc, hoja (CSV) o archivo de texto dentro de la carpeta Drive de tu negocio.',
@@ -187,13 +197,15 @@ def message_agent_definition():
     native = message_agent_tool_schema()['function']
     props = {k: v for k, v in native['parameters']['properties'].items()
              if k in ('target', 'message', 'constraints', 'expecting', 'expects_reply')}
-    props['target'] = {'type': 'string', 'description': "Handle de UN compañero de tu mismo negocio (ej. 'cotizaciones'). Ver roster en tus instrucciones."}
+    props['target'] = {'type': 'string', 'description': "Handle de UN bot del roster de tus instrucciones (ej. 'holding')."}
     return {'name': native['name'],
-            'description': ('Send a message to ANOTHER agent (teammate) of YOUR business. FIRE-AND-FORGET: it validates the target '
+            'description': ('Send a message to ANOTHER agent on your roster. FIRE-AND-FORGET: it validates the target '
                             'against the roster, delivers into that agent\'s chat with your attribution prefixed, and returns a '
                             'dispatch ack at once (status queued + delivery_id). It never returns the reply: finish your turn; '
                             'their reply wakes you later as a new message. COMPOSE the message yourself (lead with the point and '
-                            'the concrete ask). Agents of other businesses do not exist for you.'),
+                            'the concrete ask). To another business send ONLY what the request needs: never paste memory, files or '
+                            'client data. Between Guardián and Casa Kiraz the ack says awaiting_joe_approval: Joe reads the exact '
+                            'text before it is delivered.'),
             'parameters': {'type': 'object', 'properties': props, 'required': ['target', 'message']}}
 
 
@@ -278,35 +290,88 @@ def register_callbacks(request):
     return callback
 
 
+def track_captures():
+    """Guarda qué elementos vio el bot en su última captura, para describir cada paso a Joe."""
+    from tools.computer_use.cua_backend import CuaDriverBackend
+    if getattr(CuaDriverBackend, '_joe_hq_tracked', False):
+        return
+    original = CuaDriverBackend.capture
+
+    def capture(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        try:
+            SEEN['elements'] = {int(e.index): {'role': str(e.role or '')[:40], 'label': ' '.join(str(e.label or '').split())[:120]}
+                                for e in (result.elements or [])}
+            SEEN['app'] = str(result.app or '')[:80]
+            SEEN['window'] = str(result.window_title or '')[:120]
+        except Exception:
+            SEEN['elements'] = {}
+        return result
+    CuaDriverBackend.capture = capture
+    CuaDriverBackend._joe_hq_tracked = True
+
+
+def describe_step(action, args):
+    """Datos EXACTOS del paso (qué elemento, qué texto, qué teclas). El servidor decide con esto."""
+    def element(value):
+        try:
+            index = int(value)
+        except (TypeError, ValueError):
+            return None
+        info = SEEN['elements'].get(index) or {}
+        return {'index': index, 'role': info.get('role', ''), 'label': info.get('label', ''), 'known': bool(info)}
+
+    def point(value):
+        try:
+            return [int(value[0]), int(value[1])] if value and value[0] is not None else None
+        except (TypeError, ValueError, IndexError):
+            return None
+    step = {'action': action, 'app': str(args.get('app') or SEEN['app'])[:80], 'window': SEEN['window'],
+            'element': element(args.get('element')) if args.get('element') is not None else None,
+            'coordinate': point(args.get('coordinate')),
+            'modifiers': [str(m)[:12] for m in (args.get('modifiers') or [])][:6],
+            'foreground': args.get('delivery_mode') == 'foreground' or bool(args.get('bring_to_front')) or bool(args.get('raise_window'))}
+    if action == 'type':
+        step['text'] = str(args.get('text') or '')[:2000]
+    if action == 'key':
+        step['keys'] = str(args.get('keys') or '')[:80]
+    if action == 'set_value':
+        step['value'] = str(args.get('value') or '')[:300]
+    if action == 'drag':
+        step['from'] = element(args.get('from_element')) if args.get('from_element') is not None else point(args.get('from_coordinate'))
+        step['to'] = element(args.get('to_element')) if args.get('to_element') is not None else point(args.get('to_coordinate'))
+    if action == 'scroll':
+        step['direction'] = str(args.get('direction') or '')[:8]
+    if action == 'click' and str(args.get('button') or 'left') != 'left':
+        step['button'] = str(args.get('button'))[:8]
+    return step
+
+
 def enable_computer(callback):
-    """Hermes native computer_use behind the JOE HQ gate (Joe's grant, step approvals, take-over)."""
+    """Hermes native computer_use behind the JOE HQ gate (Joe's grant, view/step modes, take-over)."""
     import tools.computer_use_tool  # noqa: F401  (registra la herramienta nativa)
     from tools.computer_use import tool as cu
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA
     from tools.registry import registry
     native = cu.handle_computer_use
+    track_captures()
     # La aprobación la decide el servidor JOE HQ (permiso de Joe); la capa interna de Hermes queda delegada.
     cu._request_approval = lambda action, args: None
 
-    def summarize(action, args):
-        try:
-            return str(cu._summarize_action(action, args))[:300]
-        except Exception:
-            return action
-
     def guarded(args, **kw):
-        action = str((args or {}).get('action') or '').strip().lower()
-        summary = summarize(action, args or {})
-        verdict = callback('computer_gate', {'action': action, 'summary': summary,
-                                             'free': action in COMPUTER_FREE_ACTIONS}, timeout=200)
-        allowed = isinstance(verdict, dict) and verdict.get('ok') and (verdict.get('result') or {}).get('allow')
+        args = args if isinstance(args, dict) else {}
+        action = str(args.get('action') or '').strip().lower()
+        step = describe_step(action, args)
+        # El servidor responde permitir/negar para ESTE paso exacto; mientras tanto no se ejecuta nada.
+        verdict = callback('computer_gate', step, timeout=200)
+        allowed = isinstance(verdict, dict) and verdict.get('ok') and (verdict.get('result') or {}).get('allow') is True
         if not allowed:
             reason = ((verdict.get('result') or {}).get('reason') if isinstance(verdict, dict) and verdict.get('ok')
                       else (verdict or {}).get('error')) or 'Joe no autorizó esta acción.'
             return json.dumps({'ok': False, 'action': action, 'code': 'joe_hq_denied', 'error': reason}, ensure_ascii=False)
         result = native(args, **kw)
         failed = isinstance(result, str) and result.lstrip().startswith('{"error"')
-        callback('computer_event', {'action': action, 'summary': summary, 'ok': not failed}, timeout=10)
+        callback('computer_event', {**step, 'ok': not failed}, timeout=10)
         return result
 
     registry.register(name='computer_use', toolset='computer_use', schema=COMPUTER_USE_SCHEMA,
@@ -335,7 +400,7 @@ def install_dispatch_gate():
     executor._dispatch_authorized_once = guarded
 
 
-def build_instruction(context, computer):
+def build_instruction(context, computer, policy=None):
     context = context if isinstance(context, dict) else {}
     lines = ['Eres un bot persistente de JOE HQ. Responde siempre en español, breve y claro.',
              'Usa solo tu memoria, tu biblioteca y las apps de TU negocio. Nunca pidas ni leas datos de otro negocio.',
@@ -344,29 +409,45 @@ def build_instruction(context, computer):
     now = context.get('now')
     if isinstance(now, str) and len(now) < 80:
         lines.append('Fecha y hora local: ' + now + '.')
+    peer = context.get('peer') if isinstance(context.get('peer'), dict) else {}
+    if policy == 'clean':
+        lines.append('TURNO EN SALA LIMPIA: este mensaje viene de un bot de OTRO negocio hermano. En este turno no tienes '
+                     'memoria, historial, archivos ni apps, y está prohibido revelar cualquier dato de tu negocio. Solo puedes: '
+                     'leer el mensaje, crear una tarea para ti (task_create), cerrar una tarea (task_complete) y contestar. '
+                     'Si te piden información de tu negocio, responde que eso lo decide Joe. Tu respuesta final se entrega sola.')
+        return ' '.join(lines)
     apps = [a for a in context.get('apps', []) if isinstance(a, str)][:12]
     lines.append('Apps disponibles para tu negocio: ' + (', '.join(apps) if apps else 'solo Drive de tu negocio') + '.')
     team = [t for t in context.get('team', []) if isinstance(t, dict)][:6]
     if team:
-        roster = '; '.join(f"@{t.get('handle')} ({t.get('name')})" for t in team)
-        lines.append('Compañeros de tu negocio (roster de message_agent): ' + roster + '. Úsalo cuando otro bot deba hacer '
-                     'o saber algo; su respuesta te llegará después como mensaje nuevo.')
+        kinds = {'same': 'tu negocio', 'parent': 'otro negocio', 'sibling': 'negocio hermano: Joe aprueba cada mensaje'}
+        roster = '; '.join(f"@{t.get('handle')} ({t.get('name')}, {kinds.get(t.get('relation'), 'otro negocio')})" for t in team)
+        lines.append('Roster de message_agent y assign_task: ' + roster + '. Úsalos cuando otro bot deba hacer o saber algo; su '
+                     'respuesta te llega después como mensaje nuevo. A un bot de otro negocio dile solo lo necesario para la '
+                     'petición: jamás pegues tu memoria, tus archivos ni datos de clientes.')
     else:
-        lines.append('No tienes compañeros en tu negocio todavía; message_agent no tiene destinatarios.')
-    peer = context.get('peer')
-    if isinstance(peer, dict) and peer.get('mode') == 'incoming':
-        lines.append('ESTE TURNO es un mensaje de un compañero bot, no de Joe. Responde directo a lo que pide: tu respuesta '
+        lines.append('No hay otros bots todavía; message_agent no tiene destinatarios.')
+    if peer.get('mode') == 'incoming':
+        lines.append('ESTE TURNO es un mensaje de otro bot, no de Joe. Responde directo a lo que pide: tu respuesta '
                      'final se le entrega automáticamente. No uses message_agent para contestarle.')
-    if isinstance(peer, dict) and peer.get('mode') == 'reply':
-        lines.append('ESTE TURNO es la respuesta de un compañero a un mensaje tuyo. Continúa la tarea original y resume '
+        if peer.get('task_id'):
+            lines.append('Trae una tarea asignada (task_id ' + str(peer['task_id'])[:20] + '): cuando la termines llama task_complete.')
+    if peer.get('mode') == 'reply':
+        lines.append('ESTE TURNO es la respuesta de otro bot a un mensaje tuyo. Continúa la tarea original y resume '
                      'el resultado para Joe.')
+    if policy == 'no_persist':
+        lines.append('Este turno trae información de un negocio hijo: no puedes guardarla en memoria ni en archivos, y no '
+                     'puedes reenviarla al otro negocio.')
     if computer:
-        lines.append('Joe te prestó la computadora (computer_use + open_app). Si la app que necesitas no está abierta, usa '
-                     'open_app primero; luego capture(app=...) para ver sus elementos y actúa por índice de elemento. Trabaja solo en '
-                     'la tarea pedida. PROHIBIDO con la computadora: pulsar Enviar/Publicar/Eliminar/Pagar/Comprar, aceptar '
-                     'diálogos de esas acciones, abrir datos de otro negocio o escribir contraseñas. Si la tarea requiere uno '
-                     'de esos pasos, déjalo listo y pide a Joe que lo haga o usa request_action. Si una acción es denegada, '
-                     'no insistas: explica qué necesitas.')
+        mode = context.get('computer_mode')
+        if mode == 'view':
+            lines.append('Joe te prestó la computadora en modo SOLO VER: puedes mirar (capture), desplazarte (scroll con element=), '
+                         'cambiar a una app abierta (focus_app, open_app). NO puedes hacer clic, teclear ni escribir: el sistema lo '
+                         'bloquea. Si la tarea necesita un clic o texto, describe a Joe el paso exacto y pídele el modo paso a paso.')
+        else:
+            lines.append('Joe te prestó la computadora en modo PASO A PASO: cada clic, tecla o texto lo aprueba Joe uno por uno '
+                         'viendo exactamente qué elemento tocarás. Usa capture(app=...) y actúa por índice de elemento (element=), '
+                         'no por coordenadas. Si la app no está abierta usa open_app. Si Joe niega un paso, no insistas: explica qué necesitas.')
     return ' '.join(lines)
 
 
@@ -424,20 +505,26 @@ def run(request):
         raise BridgeError('Sesión inválida.')
     if not codex_dns_available():
         raise BridgeError('Esta Mac no puede resolver chatgpt.com. Revisa la conexión a internet.')
-    computer = bool(request.get('computer'))
-    configuration(home, model, computer)
+    policy = request.get('policy') if request.get('policy') in POLICY_TOOLS else None
+    clean = policy == 'clean'
+    computer = bool(request.get('computer')) and not policy   # nunca hay computadora en turnos entre negocios
+    configuration(home, model, computer, memory=not clean)
     oauth_token = read_credentials()
     callback = register_callbacks(request)
     if computer:
         enable_computer(callback)
+    if policy:
+        TOOL_NAMES.intersection_update(POLICY_TOOLS[policy])
     install_dispatch_gate()
     from run_agent import AIAgent
-    toolsets = ['memory', 'joe_hq'] + (['computer_use'] if computer else [])
+    toolsets = ([] if clean else ['memory']) + ['joe_hq'] + (['computer_use'] if computer else [])
+    if clean:
+        history = []   # sala limpia: el otro negocio no puede preguntar por conversaciones anteriores
     agent = AIAgent(
         provider='openai-codex', requested_provider='openai-codex', model=model,
         api_mode='codex_responses', base_url=CODEX_URL, api_key=oauth_token,
         max_iterations=40 if computer else 14, max_tokens=4000, enabled_toolsets=toolsets,
-        fallback_model={}, load_soul_identity=True, skip_background_review=True,
+        fallback_model={}, load_soul_identity=True, skip_background_review=True, skip_memory=clean,
         skip_context_files=True, quiet_mode=True, save_trajectories=False,
         verbose_logging=False, session_id=session_id, cwd=str(workspace),
         run_budget_seconds=840 if computer else 270,
@@ -445,7 +532,7 @@ def run(request):
     agent._bot_mode_protocol = False
     agent.tools = [tool for tool in agent.tools if tool.get('function', {}).get('name') in TOOL_NAMES]
     agent.valid_tool_names = set(TOOL_NAMES)
-    instruction = build_instruction(request.get('context'), computer)
+    instruction = build_instruction(request.get('context'), computer, policy)
     try:
         result = agent.run_conversation(message, system_message=instruction, conversation_history=history)
         if result.get('error') or result.get('failed') or result.get('completed') is False:

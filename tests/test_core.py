@@ -130,26 +130,108 @@ class StoreIsolationTests(Fixture):
         self.store.db.commit()
         self.problem(409, self.store.memory, 'guardian', {'memory': 'No actualizar'})
 
-    def test_cross_business_messages_and_holding_bridge_denied(self):
-        for source, target in [('guardian', 'casa_kiraz'), ('casa_kiraz', 'guardian'), ('holding', 'guardian'), ('holding', 'casa_kiraz')]:
-            with self.subTest(source=source, target=target):
-                self.problem(403, self.store.dm_create, source, target, 'FICTICIO')
-                # El roster del bot ni siquiera contiene al otro negocio.
-                self.problem(404, self.app.message_agent, source, {'target': target, 'body': 'FICTICIO'})
-                self.problem(404, self.app.relay, source, target, 'FICTICIO')
-        self.assertEqual(self.store.detail('casa_kiraz')['messages'], [])
-        self.assertEqual(self.app.jobs, [])
-
-    def test_same_business_message_is_queued_with_native_ack(self):
+    def test_roster_lists_every_bot_with_its_relation(self):
+        team = {t['id']: t['relation'] for t in self.store.teammates('guardian')}
+        self.assertEqual(team, {'casa_kiraz': 'sibling', 'holding': 'parent'})
         extra = self.store.create_bot('Apoyo Guardián', 'guardian')
         self.assertEqual(extra['handle'], 'apoyo_guardian')
-        self.assertEqual([t['id'] for t in self.store.teammates('guardian')], [extra['id']])
+        self.assertEqual({t['id']: t['relation'] for t in self.store.teammates('holding')},
+                         {'guardian': 'parent', 'casa_kiraz': 'parent', extra['id']: 'parent'})
+        self.problem(404, self.app.message_agent, 'guardian', {'target': 'no_existe', 'body': 'x'})
+        self.problem(400, self.store.dm_create, 'guardian', 'guardian', 'x')
+
+    def test_same_business_and_holding_messages_are_queued_directly(self):
+        extra = self.store.create_bot('Apoyo Guardián', 'guardian')
         self.app.jobs = _Hold()  # la entrega real (turno Hermes) no se ejecuta en pruebas
-        ack = self.app.message_agent('guardian', {'target': '@apoyo_guardian', 'body': 'Mensaje ficticio', 'expects_reply': True})
+        for source, target in (('guardian', 'apoyo_guardian'), ('guardian', 'holding'), ('holding', 'casa_kiraz'), ('casa_kiraz', 'holding')):
+            with self.subTest(source=source, target=target):
+                ack = self.app.message_agent(source, {'target': '@' + target, 'body': 'Mensaje ficticio', 'expects_reply': True})
+                self.assertEqual(ack['status'], 'queued')
+                dm = self.store.dm(ack['delivery_id'])
+                self.assertEqual((dm['from_bot'], dm['depth'], dm['status']), (source, 1, 'en_cola'))
+                self.assertEqual(self.app.jobs.items[-1], {'kind': 'deliver', 'dm': ack['delivery_id'], 'task_id': None})
+        self.assertEqual(self.store.approvals(), [])
+
+    def test_guardian_and_kiraz_messages_wait_for_joe(self):
+        self.app.jobs = _Hold()
+        for source, target in (('guardian', 'casa_kiraz'), ('casa_kiraz', 'guardian')):
+            with self.subTest(source=source):
+                ack = self.app.message_agent(source, {'target': target, 'body': 'Propuesta de promoción conjunta', 'expects_reply': True})
+                self.assertEqual(ack['status'], 'awaiting_joe_approval')
+                self.assertEqual(self.store.dms(source), [])            # nada cruzó todavía
+                self.assertEqual(self.app.jobs.items, [])
+                row = self.store.approvals(source)[0]
+                self.assertEqual((row['action'], row['status'], row['payload']['mensaje']), ('cross_message', 'pendiente', 'Propuesta de promoción conjunta'))
+                self.assertEqual(self.store.decide(row['id'], 'reject', self.app.execute_approved)['status'], 'rechazada')
+                self.assertEqual(self.store.dms(source), [])
+        # Aprobado por Joe: se entrega una sola vez.
+        ack = self.app.message_agent('guardian', {'target': 'casa_kiraz', 'body': 'Texto aprobado', 'expects_reply': True})
+        done = self.store.decide(ack['approval_id'], 'approve', self.app.execute_approved)
+        self.assertEqual(done['status'], 'completa')
+        dm = self.store.dm(done['result']['delivery_id'])
+        self.assertEqual((dm['from_bot'], dm['to_bot'], dm['body']), ('guardian', 'casa_kiraz', 'Texto aprobado'))
+        self.assertEqual(len(self.app.jobs.items), 1)
+        self.problem(409, self.store.decide, ack['approval_id'], 'approve', self.app.execute_approved)
+        # Un bot no puede fabricar esa aprobación por request_action, ni mandar textos largos a otro negocio.
+        with patch.object(self.app.mcp, 'discover', return_value=FAKE_STATUS):
+            self.problem(403, self.app.propose, 'guardian', 'cross_message', {'de_id': 'guardian', 'para_id': 'casa_kiraz', 'mensaje': 'x'})
+        self.problem(400, self.app.message_agent, 'guardian', {'target': 'holding', 'body': 'x' * 4001})
+
+    def test_holding_never_bridges_guardian_and_kiraz(self):
+        self.app.jobs = _Hold()
+        for first, other in (('guardian', 'casa_kiraz'), ('casa_kiraz', 'guardian')):
+            with self.subTest(first=first):
+                ack = self.app.message_agent(first, {'target': 'holding', 'body': 'Dato interno ficticio'})
+                chain = self.store.dm(ack['delivery_id'])['chain']
+                self.app.turn_context['holding'] = {'chain': chain, 'depth': 1, 'sent': 0}   # Holding atendiendo ese mensaje
+                self.problem(403, self.app.message_agent, 'holding', {'target': other, 'body': 'Reenvío'})
+                self.problem(403, self.app.assign_task, 'holding', {'target': other, 'title': 'Reenviar', 'details': 'x'})
+                self.assertEqual(self.app.message_agent('holding', {'target': first, 'body': 'Respuesta'})['status'], 'queued')
+                self.assertEqual([d for d in self.store.dms(other) if d['chain'] == chain and other in (d['from_bot'], d['to_bot'])], [])
+                self.assertEqual(self.store.detail(other)['tasks'], [])
+                self.app.turn_context.pop('holding')
+
+    def test_turn_policies_between_businesses(self):
+        policy = Application.turn_policy
+        self.assertIsNone(policy('guardian', None))
+        self.assertIsNone(policy('guardian', {'mode': 'incoming', 'relation': 'same'}))
+        self.assertEqual(policy('casa_kiraz', {'mode': 'incoming', 'relation': 'sibling'}), 'clean')
+        self.assertEqual(policy('guardian', {'mode': 'incoming', 'relation': 'sibling'}), 'clean')
+        self.assertIsNone(policy('guardian', {'mode': 'reply', 'relation': 'sibling'}))   # la respuesta nació en sala limpia
+        for mode in ('incoming', 'reply'):
+            self.assertEqual(policy('holding', {'mode': mode, 'relation': 'parent'}), 'no_persist')
+            self.assertIsNone(policy('guardian', {'mode': mode, 'relation': 'parent'}))
+
+    def test_server_enforces_policy_on_tool_calls(self):
+        self.store.engine_tickets['limpia'] = {'bot_id': 'casa_kiraz', 'expires': time.time() + 30, 'policy': 'clean'}
+        self.store.engine_tickets['hold'] = {'bot_id': 'holding', 'expires': time.time() + 30, 'policy': 'no_persist'}
+        call = lambda token, bot, tool, **a: self.app.engine_tool(token, {'bot_id': bot, 'tool': tool, 'arguments': a})
+        for tool in ('list_files', 'save_file', 'drive_list', 'drive_read', 'gmail_search', 'request_action', 'message_agent',
+                     'assign_task', 'computer_gate', 'open_app', 'sheets_read', 'calendar_list'):
+            with self.subTest(tool=tool):
+                self.problem(403, call, 'limpia', 'casa_kiraz', tool)
+        self.assertEqual(call('limpia', 'casa_kiraz', 'task_create', title='Revisar propuesta')['bot_id'], 'casa_kiraz')
+        for tool in ('save_file', 'computer_gate', 'open_app'):
+            self.problem(403, call, 'hold', 'holding', tool, path='x.md', content='x', name='Calculator')
+        self.assertEqual(call('hold', 'holding', 'list_files'), {'files': []})
+        self.assertEqual(self.store.detail('holding')['files'], [])
+
+    def test_tasks_travel_between_bots_with_origin(self):
+        self.app.jobs = _Hold()
+        ack = self.app.assign_task('guardian', {'target': 'holding', 'title': 'Consolidar ventas', 'details': 'Semana 46'})
         self.assertEqual(ack['status'], 'queued')
-        dm = self.store.dm(ack['delivery_id'])
-        self.assertEqual((dm['from_bot'], dm['to_bot'], dm['depth'], dm['status']), ('guardian', extra['id'], 1, 'en_cola'))
-        self.assertEqual(self.app.jobs.items, [{'kind': 'deliver', 'dm': ack['delivery_id']}])
+        task = self.store.detail('holding')['tasks'][0]
+        self.assertEqual((task['title'], task['origin'], task['status']), ('Consolidar ventas', 'Guardián Ventas', 'pendiente'))
+        self.assertEqual(self.app.jobs.items[-1]['task_id'], task['id'])
+        self.assertIn('[TASK ' + task['id'] + ']', self.store.dm(ack['delivery_id'])['body'])
+        self.problem(404, self.store.task_complete, 'guardian', task['id'])      # solo el dueño la cierra
+        self.assertEqual(self.store.task_complete('holding', task['id'])['status'], 'completa')
+        # Entre hermanos la tarea también espera a Joe y no aparece antes.
+        ack = self.app.assign_task('guardian', {'target': 'casa_kiraz', 'title': 'Promo conjunta', 'details': 'Viernes'})
+        self.assertEqual(ack['status'], 'awaiting_joe_approval')
+        self.assertEqual(self.store.detail('casa_kiraz')['tasks'], [])
+        self.store.decide(ack['approval_id'], 'approve', self.app.execute_approved)
+        self.assertEqual(self.store.detail('casa_kiraz')['tasks'][0]['origin'], 'Guardián Ventas')
 
     def test_message_chains_are_bounded(self):
         extra = self.store.create_bot('Apoyo Guardián', 'guardian')
@@ -305,56 +387,128 @@ class ApprovalAndAuthTests(Fixture):
         self.store.engine_tickets['ficticio-efimero']['expires'] = time.time() - 1
         self.problem(403, self.app.engine_tool, 'ficticio-efimero', {'bot_id': 'guardian', 'tool': 'list_files'})
 
+    EFFECTS = [{'action': 'click', 'element': {'index': 4, 'role': 'AXButton', 'label': 'Enviar', 'known': True}},
+               {'action': 'click', 'coordinate': [10, 20]}, {'action': 'double_click', 'element': {'index': 1, 'role': 'AXCell', 'label': 'x', 'known': True}},
+               {'action': 'right_click', 'coordinate': [1, 1]}, {'action': 'middle_click', 'coordinate': [1, 1]},
+               {'action': 'drag', 'from': [1, 1], 'to': [9, 9]}, {'action': 'type', 'text': 'hola'}, {'action': 'key', 'keys': 'return'},
+               {'action': 'key', 'keys': 'cmd+backspace'}, {'action': 'set_value', 'value': '5', 'element': {'index': 2, 'role': 'AXPopUpButton', 'label': 'x', 'known': True}},
+               {'action': 'scroll', 'coordinate': [5, 5]}, {'action': 'scroll'}, {'action': 'scroll', 'modifiers': ['cmd'], 'element': {'index': 1, 'role': 'AXScrollArea', 'label': '', 'known': True}},
+               {'action': 'scroll', 'element': {'index': 3, 'role': 'AXSlider', 'label': 'Volumen', 'known': True}},
+               {'action': 'scroll', 'element': {'index': 9, 'role': '', 'label': '', 'known': False}},
+               {'action': 'accion_que_no_existe'}, {'action': ''}, {}]
+    LOOKS = [{'action': 'capture'}, {'action': 'list_apps'}, {'action': 'list_windows'}, {'action': 'wait'}, {'action': 'focus_app', 'app': 'Safari'},
+             {'action': 'scroll', 'element': {'index': 1, 'role': 'AXScrollArea', 'label': '', 'known': True}},
+             {'action': 'scroll', 'element': {'index': 2, 'role': 'AXWebArea', 'label': 'Página', 'known': True}}]
+
     def test_computer_needs_grant_and_only_one_bot_holds_it(self):
-        deny = self.app.computer_gate('guardian', {'action': 'click', 'summary': 'clic'})
-        self.assertFalse(deny['allow'])
-        self.assertFalse(self.app.computer_gate('guardian', {'action': 'capture', 'free': True})['allow'])
+        for step in self.LOOKS + self.EFFECTS:
+            self.assertFalse(self.app.computer_gate('guardian', step)['allow'])       # sin préstamo: nada, ni mirar
         self.problem(404, self.app.screen)
-        self.assertFalse(self.app.open_app('guardian', 'Calculator')['opened'])
-        state = self.app.control('guardian', 'agent', 'session')
-        self.assertEqual((state['owner'], state['bot_id'], state['mode']), ('agent', 'guardian', 'session'))
-        self.assertTrue(self.app.computer_gate('guardian', {'action': 'click', 'summary': 'clic'})['allow'])
-        self.assertFalse(self.app.computer_gate('casa_kiraz', {'action': 'capture', 'free': True})['allow'])
-        self.problem(409, self.app.control, 'casa_kiraz', 'agent', 'session')
-        self.problem(400, self.app.control, 'guardian', 'agent', 'modo_inventado')
+        with patch('server.subprocess.run') as run:
+            self.assertFalse(self.app.open_app('guardian', 'Calculator')['opened'])
+            run.assert_not_called()
+        state = self.app.control('guardian', 'agent', 'view')
+        self.assertEqual((state['owner'], state['bot_id'], state['mode']), ('agent', 'guardian', 'view'))
+        self.assertFalse(self.app.computer_gate('casa_kiraz', {'action': 'capture'})['allow'])
+        self.problem(409, self.app.control, 'casa_kiraz', 'agent', 'view')
+        for mode in ('session', 'modo_inventado', '', None):
+            self.problem(400, self.app.control, 'guardian', 'agent', mode)
 
-    def test_step_mode_waits_for_joe_and_respects_denial(self):
+    def test_view_mode_can_look_but_never_act(self):
+        self.app.control('guardian', 'agent', 'view')
+        for step in self.LOOKS:
+            with self.subTest(look=step):
+                self.assertTrue(self.app.computer_gate('guardian', step)['allow'])
+        for step in self.EFFECTS:
+            with self.subTest(effect=step):
+                started = time.time()
+                verdict = self.app.computer_gate('guardian', step)
+                self.assertIs(verdict['allow'], False)
+                self.assertIn('solo ver', verdict['reason'])
+                self.assertLess(time.time() - started, 1)                 # se niega al instante: no hay a quién pedirle
+                self.assertIsNone(self.app.computer_state()['pending'])   # ni siquiera se ofrece aprobarlo
+        blocked = [e for e in self.store.computer['events'] if e.get('blocked')]
+        self.assertEqual(len(blocked), len(self.EFFECTS))
+        # Abrir apps: solo traer al frente una que ya corre; una cerrada no se lanza.
+        with patch.object(self.app, 'app_running', return_value=False), patch('server.subprocess.run') as run:
+            result = self.app.open_app('guardian', 'Mail')
+            self.assertFalse(result['opened'])
+            run.assert_not_called()
+        with patch.object(self.app, 'app_running', return_value=True), patch('server.time.sleep'), \
+                patch('server.subprocess.run', return_value=SimpleNamespace(returncode=0)) as run:
+            self.assertTrue(self.app.open_app('guardian', 'Mail')['opened'])
+            run.assert_called_once()
+
+    def decide_when_pending(self, decision):
+        for _ in range(200):
+            pending = self.app.computer_state()['pending']
+            if pending:
+                self.app.computer_decide(pending['id'], decision)
+                return pending
+            time.sleep(0.01)
+        self.fail('el paso nunca quedó pendiente')
+
+    def test_step_mode_asks_joe_for_each_exact_step(self):
         self.app.control('guardian', 'agent', 'step')
-        self.assertTrue(self.app.computer_gate('guardian', {'action': 'capture', 'free': True})['allow'])
-        for decision, expected in (('allow', True), ('deny', False)):
-            with self.subTest(decision=decision):
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(self.app.computer_gate, 'guardian', {'action': 'click', 'summary': 'clic en Enviar'})
-                    for _ in range(100):
-                        pending = self.app.computer_state()['pending']
-                        if pending:
-                            break
-                        time.sleep(0.02)
-                    self.assertEqual(pending['summary'], 'clic en Enviar')
-                    self.problem(409, self.app.computer_decide, 'otro-id', 'allow')
-                    self.app.computer_decide(pending['id'], decision)
+        for step in self.LOOKS:
+            self.assertTrue(self.app.computer_gate('guardian', step)['allow'])
+        send = self.EFFECTS[0]
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            for decision, expected in (('allow', True), ('deny', False), ('allow', True)):
+                with self.subTest(decision=decision):
+                    future = pool.submit(self.app.computer_gate, 'guardian', send)
+                    pending = self.decide_when_pending(decision)
+                    self.assertEqual(pending['summary'], 'Clic en botón «Enviar»')
+                    self.assertIn('enviar', pending['warning'])
                     self.assertEqual(future.result(timeout=5)['allow'], expected)
-                self.assertIsNone(self.app.computer_state()['pending'])
+                    self.assertIsNone(self.app.computer_state()['pending'])
+            # Un permiso vale para UN paso: el siguiente vuelve a esperar, y todos los de efecto preguntan.
+            for step in self.EFFECTS:
+                with self.subTest(effect=step):
+                    future = pool.submit(self.app.computer_gate, 'guardian', step)
+                    self.assertFalse(future.done())
+                    self.decide_when_pending('deny')
+                    self.assertFalse(future.result(timeout=5)['allow'])
+            future = pool.submit(self.app.computer_gate, 'guardian', {'action': 'type', 'text': 'Total: $1,250'})
+            pending = self.decide_when_pending('allow')
+            self.assertEqual(pending['summary'], 'Escribir texto «Total: $1,250»')
+            self.assertTrue(future.result(timeout=5)['allow'])
+            self.problem(409, self.app.computer_decide, 'otro-id', 'allow')
+            self.problem(400, self.app.computer_decide, pending['id'], 'quizas')
 
-    def test_taking_control_stops_holder_and_expiry_revokes(self):
+    def test_changing_mode_or_taking_control_voids_a_pending_step(self):
         stopped = []
         fake = SimpleNamespace(pid=999999, poll=lambda: None)
-        self.app.control('guardian', 'agent', 'step')
-        self.store.active_processes['guardian'] = fake
         with ThreadPoolExecutor(max_workers=1) as pool, patch('server.os.killpg', side_effect=lambda pid, sig: stopped.append(pid)):
-            future = pool.submit(self.app.computer_gate, 'guardian', {'action': 'type', 'summary': 'escribir'})
-            for _ in range(100):
+            # Joe cambia a «solo ver» mientras hay un paso esperando: aunque llegara un «permitir», no se ejecuta.
+            self.app.control('guardian', 'agent', 'step')
+            future = pool.submit(self.app.computer_gate, 'guardian', self.EFFECTS[0])
+            for _ in range(200):
+                pending = self.store.computer['pending']
+                if pending:
+                    break
+                time.sleep(0.01)
+            self.app.control('guardian', 'agent', 'view')
+            pending['decision'] = 'allow'
+            with self.app.gate:
+                self.app.gate.notify_all()
+            self.assertFalse(future.result(timeout=5)['allow'])
+            # Tomar control: niega el paso pendiente y detiene el turno del bot.
+            self.app.control('guardian', 'agent', 'step')
+            self.store.active_processes['guardian'] = fake
+            future = pool.submit(self.app.computer_gate, 'guardian', {'action': 'type', 'text': 'x'})
+            for _ in range(200):
                 if self.app.computer_state()['pending']:
                     break
-                time.sleep(0.02)
+                time.sleep(0.01)
             result = self.app.control('guardian', 'user')
             self.assertFalse(future.result(timeout=5)['allow'])
         self.assertEqual(stopped, [999999])
         self.assertEqual((result['owner'], result['bot_id'], result['pending']), ('user', None, None))
-        self.assertFalse(self.app.computer_gate('guardian', {'action': 'capture', 'free': True})['allow'])
-        self.app.control('guardian', 'agent', 'session')
+        self.assertFalse(self.app.computer_gate('guardian', {'action': 'capture'})['allow'])
+        self.app.control('guardian', 'agent', 'step')
         self.store.computer['expires'] = time.time() - 1
-        self.assertFalse(self.app.computer_gate('guardian', {'action': 'click'})['allow'])
+        self.assertFalse(self.app.computer_gate('guardian', {'action': 'capture'})['allow'])
         self.assertEqual(self.app.computer_state()['owner'], 'user')
 
 

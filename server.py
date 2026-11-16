@@ -32,7 +32,8 @@ import threading
 import time
 from urllib.parse import urlsplit, unquote, parse_qs
 from local_engine.core import (Store, Problem, ROOT, STAGING_ROOT, PROFILES, SCOPES, MODEL_ALLOWLIST, APPROVAL_ACTIONS,
-                               EXCLUSIVE_TOOLKITS, preflight, cache_environment, safe_path, short_text, atomic_write)
+                               EXCLUSIVE_TOOLKITS, SIBLINGS, CROSS_MESSAGE_LIMIT, relation, preflight, cache_environment,
+                               safe_path, short_text, atomic_write)
 from local_engine.composio_mcp import ComposioMCP, TOKEN_FILE, TOOLKITS
 
 APP = Path(__file__).resolve().parent
@@ -43,6 +44,28 @@ TURN_SECONDS, COMPUTER_TURN_SECONDS = 330, 900
 GRANT_SECONDS = 15 * 60
 MAX_CHAIN_MESSAGES = 8
 STATIC_FILES = ('index.html', 'app.js', 'styles.css', 'upstream-tokens.css')
+
+# ── Computadora del agente: política de la compuerta (la aplica el servidor, no el modelo) ──────────
+# Lista BLANCA. Lo que no esté aquí se trata como acción con efecto.
+PASSIVE_ACTIONS = frozenset({'capture', 'list_apps', 'list_windows', 'wait'})          # solo mirar
+# Controles donde la rueda del ratón CAMBIA un valor: ahí desplazarse no es "solo ver".
+VALUE_ROLES = frozenset({'AXSlider', 'AXIncrementor', 'AXStepper', 'AXPopUpButton', 'AXComboBox', 'AXTextField',
+                         'AXValueIndicator', 'AXColorWell', 'AXDateField', 'AXTimeField', 'AXLevelIndicator', 'AXDial'})
+ROLE_NAMES = {'AXButton': 'botón', 'AXTextField': 'campo de texto', 'AXTextArea': 'área de texto', 'AXLink': 'enlace',
+              'AXMenuItem': 'opción de menú', 'AXMenuBarItem': 'menú', 'AXCheckBox': 'casilla', 'AXRadioButton': 'opción',
+              'AXPopUpButton': 'menú desplegable', 'AXComboBox': 'lista desplegable', 'AXStaticText': 'texto', 'AXImage': 'imagen',
+              'AXTab': 'pestaña', 'AXTabGroup': 'pestañas', 'AXWindow': 'ventana', 'AXSlider': 'deslizador', 'AXCell': 'celda',
+              'AXRow': 'fila', 'AXScrollArea': 'zona desplazable', 'AXWebArea': 'página web', 'AXGroup': 'grupo', 'AXToolbar': 'barra'}
+ACTION_NAMES = {'click': 'Clic', 'double_click': 'Doble clic', 'right_click': 'Clic derecho', 'middle_click': 'Clic central',
+                'drag': 'Arrastrar', 'scroll': 'Desplazar', 'type': 'Escribir texto', 'key': 'Pulsar tecla', 'set_value': 'Poner valor',
+                'focus_app': 'Traer app al frente', 'open_app': 'Abrir app'}
+# Solo para RESALTAR en rojo al pedir permiso. No decide nada: todo paso con efecto pide permiso igual.
+SENSITIVE = re.compile(r'(enviar|send|publicar|publish|postear|post\b|tweet|eliminar|borrar|delete|remove|papelera|trash|vaciar|'
+                       r'comprar|buy|pagar|pay\b|checkout|pedido|order|confirm|aceptar|accept|submit|transferir|transfer|'
+                       r'autorizar|authorize|responder|reply|compartir|share|firmar|sign\b|guardar|save|descartar|discard|'
+                       r'return|enter|intro|backspace|supr)', re.I)
+VIEW_ONLY = ('Modo «solo ver»: no puedes hacer clic, teclear ni escribir; el sistema lo bloquea. Dile a Joe el paso exacto '
+             'que hace falta y pídele prestar la computadora en «paso a paso».')
 STALE_TAB = 'Esta pestaña tiene una versión anterior de JOE HQ. Recarga la página (Cmd+R) para ver la actual.'
 log = logging.getLogger('joe_hq')
 
@@ -213,7 +236,7 @@ class Application:
                       'tts_error': self.voice_out.last_error, 'voices': self.voice_out.voices(), 'voice': self.voice_out.voice(),
                       'loaded': bool(self.voice_out.process and self.voice_out.process.poll() is None)},
             'computer': {'engine': 'Hermes computer_use (cua-driver)', 'granted': c['owner'] == 'agent' and c['expires'] > time.time()},
-            'native_interbot': 'message_agent de Hermes; entrega JOE HQ dentro del mismo negocio',
+            'native_interbot': 'message_agent de Hermes; entrega JOE HQ; Guardián↔Casa Kiraz con aprobación y sala limpia',
             'imessage': 'fase 2',
         }
 
@@ -224,7 +247,8 @@ class Application:
                 self.revoke('El permiso venció.')
             return {'owner': c['owner'], 'bot_id': c['bot_id'], 'mode': c['mode'],
                     'seconds_left': max(0, int(c['expires'] - time.time())) if c['owner'] == 'agent' else 0,
-                    'events': c['events'][-12:], 'pending': c['pending'] and {k: c['pending'][k] for k in ('id', 'action', 'summary', 'created')}}
+                    'events': c['events'][-12:],
+                    'pending': c['pending'] and {k: c['pending'][k] for k in ('id', 'action', 'summary', 'where', 'warning', 'created')}}
 
     def state(self):
         return {'bots': self.store.bots(), 'profiles': PROFILES, 'capabilities': self.capabilities(),
@@ -279,7 +303,19 @@ class Application:
             if entry['scope'] == bot['scope']:
                 apps.append(TOOLKITS.get(toolkit, toolkit))
         return {'now': time.strftime('%A %d/%m/%Y %H:%M %Z'), 'apps': apps, 'peer': peer,
-                'team': [{'handle': t['handle'], 'name': t['name']} for t in self.store.teammates(bot_id)]}
+                'computer_mode': self.store.computer['mode'],
+                'team': [{'handle': t['handle'], 'name': t['name'], 'relation': t['relation']} for t in self.store.teammates(bot_id)]}
+
+    @staticmethod
+    def turn_policy(scope, peer):
+        """Qué puede tocar el bot en un turno disparado por otro bot. Lo decide el servidor.
+        clean       Guardián ↔ Casa Kiraz, mensaje entrante: sin memoria, historial, archivos ni apps.
+        no_persist  Holding con contenido de un negocio hijo: no guarda memoria ni archivos ni historial."""
+        if not peer or not peer.get('relation') or peer['relation'] == 'same':
+            return None
+        if peer['relation'] == 'sibling':
+            return 'clean' if peer.get('mode') == 'incoming' else None
+        return 'no_persist' if scope == 'holding' else None
 
     def turn(self, bot_id, text, ident, peer=None, dm_id=None):
         ticket = secrets.token_urlsafe(40)
@@ -287,18 +323,19 @@ class Application:
         home = self.store.home(bot_id)
         history_path = safe_path(home, 'sessions/' + bot['generation'] + '.json')
         process = None
-        computer = self.computer_granted(bot_id)
+        policy = self.turn_policy(bot['scope'], peer)
+        computer = self.computer_granted(bot_id) and not policy
         budget = COMPUTER_TURN_SECONDS if computer else TURN_SECONDS
         started = time.time()
         try:
             if not HERMES_PYTHON.is_file():
                 raise Problem('No se encontró el runtime de Hermes.', 503)
-            history = json.loads(history_path.read_text()) if history_path.exists() else []
+            history = json.loads(history_path.read_text()) if history_path.exists() and policy != 'clean' else []
             with self.store.lock:
-                self.store.engine_tickets[ticket] = {'bot_id': bot_id, 'expires': time.time() + budget + 60}
+                self.store.engine_tickets[ticket] = {'bot_id': bot_id, 'expires': time.time() + budget + 60, 'policy': policy}
             payload = {'command': 'run', 'home': str(home), 'workspace': str(self.store.workspace(bot_id)),
                        'message': text, 'model': bot['model'], 'history': history, 'session_id': bot['generation'],
-                       'bot_id': bot_id, 'callback_token': ticket, 'computer': computer,
+                       'bot_id': bot_id, 'callback_token': ticket, 'computer': computer, 'policy': policy,
                        'context': self.prompt_context(bot_id, peer),
                        'callback_url': f'http://127.0.0.1:{self.port}/api/engine/tool'}
             process = subprocess.Popen([str(HERMES_PYTHON), '-B', str(APP / 'local_engine/hermes_bridge.py')],
@@ -315,11 +352,12 @@ class Application:
             if not result.get('ok'):
                 raise Problem(result.get('error', 'Hermes no completó la conversación.'), 503)
             response = short_text(result.get('response', ''), 100000)
-            if isinstance(result.get('history'), list):
+            # Con política activa el intercambio NO entra al historial de Hermes: no deja rastro reutilizable.
+            if isinstance(result.get('history'), list) and not policy:
                 atomic_write(history_path, json.dumps(result['history'], ensure_ascii=False))
             status = 'completo'
             self.hermes_ok, self.hermes_error = time.time(), None
-            log.info('turno %s: completo en %.1fs (computadora=%s)', bot_id, time.time() - started, computer)
+            log.info('turno %s: completo en %.1fs (computadora=%s, política=%s)', bot_id, time.time() - started, computer, policy)
         except subprocess.TimeoutExpired:
             response = f'Hermes no respondió en {budget} segundos. No se usó otro proveedor.'
             status = 'error'
@@ -345,9 +383,9 @@ class Application:
                 self.store.db.commit()
             self.after_turn(dm_id, peer, response, status)
 
-    # ------------------------------------------------------------------ mensajes entre bots (mismo negocio)
+    # ------------------------------------------------------------------ mensajes y tareas entre bots
     def after_turn(self, dm_id, peer, response, status):
-        """Si el turno era un mensaje entrante de un compañero, su respuesta final vuelve al emisor."""
+        """Si el turno era un mensaje entrante de otro bot, su respuesta final vuelve al emisor."""
         if not dm_id or not peer or peer.get('mode') != 'incoming':
             return
         ok = status == 'completo'
@@ -357,23 +395,67 @@ class Application:
             with self.store.lock:
                 self.jobs.append({'kind': 'reply', 'dm': dm_id})
 
-    def message_agent(self, bot_id, args):
+    def message_agent(self, bot_id, args, task=None):
+        """message_agent / assign_task. Mismo negocio y Holding↔hijo: entrega directa.
+        Guardián ↔ Casa Kiraz: el texto exacto espera el botón de Joe antes de cruzar."""
+        sender = self.store.bot(bot_id)
         target = self.store.resolve_teammate(bot_id, args.get('target'))
+        kind = target['relation']
+        body = short_text(args.get('body'), 16000 if kind == 'same' else CROSS_MESSAGE_LIMIT)
+        expects = bool(args.get('expects_reply', True))
         with self.store.lock:
             ctx = self.turn_context.get(bot_id) or {'chain': None, 'depth': 0, 'sent': 0}
             if ctx['chain'] and self.store.db.execute('SELECT COUNT(*) FROM dms WHERE chain=?', (ctx['chain'],)).fetchone()[0] >= MAX_CHAIN_MESSAGES:
                 raise Problem('Esta conversación entre bots llegó a su límite. Resume el resultado para Joe.', 409)
-            ident = self.store.dm_create(bot_id, target['id'], args.get('body'), bool(args.get('expects_reply', True)),
-                                         chain=ctx['chain'], depth=ctx['depth'] + 1)
+            if kind == 'sibling':
+                payload = {'de': sender['name'], 'para': target['name'], 'mensaje': body, 'de_id': bot_id, 'para_id': target['id'],
+                           'espera_respuesta': expects}
+                if task:
+                    payload['tarea'] = task
+                made = self.store.approval(bot_id, 'cross_message', payload)
+                self.store.add_message(bot_id, 'system', f"Mensaje para {target['name']} (otro negocio) en espera: Joe debe aprobar el texto en la pestaña Aprobar.")
+                log.info('dm: %s -> %s espera aprobación de Joe (%s)', bot_id, target['id'], made['id'])
+                return {'status': 'awaiting_joe_approval', 'approval_id': made['id'], 'target': target['handle'],
+                        'note': 'Not delivered yet. Joe must approve the exact text. Finish your turn and tell Joe.'}
+            ident = self.deliver(bot_id, target, body, expects, ctx['chain'], ctx['depth'] + 1, task)
             ctx['sent'] = ctx.get('sent', 0) + 1
-            self.jobs.append({'kind': 'deliver', 'dm': ident})
-        self.store.add_message(bot_id, 'system', f"Mensaje enviado a {target['name']} (@{target['handle']}). Su respuesta llegará aquí.")
-        log.info('dm %s: %s -> %s en cola', ident, bot_id, target['id'])
         return {'status': 'queued', 'delivery_id': ident, 'target': target['handle'],
                 'note': 'Hand-off, not a receipt. Finish your turn; the reply wakes you as a new message.'}
 
+    def deliver(self, bot_id, target, body, expects, chain, depth, task=None):
+        task_id = None
+        self.store.check_route(bot_id, target['id'], chain, depth)   # si la ruta está prohibida, no se crea ni la tarea
+        if task:
+            sender = self.store.bot(bot_id)
+            task_id = self.store.task(target['id'], task, origin=sender['name'])['id']
+            body = f"[TASK {task_id}] {task}\n{body}".strip()
+        ident = self.store.dm_create(bot_id, target['id'], body, expects, chain=chain, depth=depth)
+        with self.store.lock:
+            self.jobs.append({'kind': 'deliver', 'dm': ident, 'task_id': task_id})
+        self.store.add_message(bot_id, 'system', (f"Tarea asignada a {target['name']}" if task else f"Mensaje enviado a {target['name']}")
+                               + f" (@{target['handle']}). Su respuesta llegará aquí.")
+        log.info('dm %s: %s -> %s en cola (tarea=%s)', ident, bot_id, target['id'], bool(task))
+        return ident
+
+    def assign_task(self, bot_id, args):
+        title = short_text(args.get('title'), 300)
+        details = short_text(args.get('details') or 'Sin más detalle.', 2000)
+        return self.message_agent(bot_id, {'target': args.get('target'), 'body': details, 'expects_reply': True}, task=title)
+
+    def execute_approved(self, bot_id, action, payload):
+        """Ejecutor único de aprobaciones: lo llama Store.decide tras el clic de Joe."""
+        if action != 'cross_message':
+            return self.mcp.execute_action(bot_id, action, payload)
+        sender, target = self.store.bot(payload.get('de_id')), self.store.bot(payload.get('para_id'))
+        if sender['id'] != bot_id or relation(sender['scope'], target['scope']) != 'sibling':
+            raise Problem('El mensaje ya no corresponde a estos bots.', 409)
+        target = dict(target, relation='sibling')
+        ident = self.deliver(bot_id, target, payload.get('mensaje'), bool(payload.get('espera_respuesta', True)), None, 1, payload.get('tarea'))
+        return {'hecho': 'Mensaje entregado a ' + target['name'], 'delivery_id': ident,
+                'nota': 'El bot destino lo atiende en sala limpia: sin su memoria, historial, archivos ni apps.'}
+
     def dispatcher(self):
-        """Entrega mensajes entre bots cuando el destinatario está libre. Nunca cruza negocios."""
+        """Entrega mensajes entre bots cuando el destinatario está libre."""
         while True:
             time.sleep(0.6)
             try:
@@ -386,11 +468,7 @@ class Application:
                             self.jobs.remove(job)
                         continue
                     sender, receiver = self.store.bot(dm['from_bot']), self.store.bot(dm['to_bot'])
-                    if sender['scope'] != receiver['scope']:  # defensa en profundidad
-                        self.store.dm_update(dm['id'], 'bloqueado')
-                        with self.store.lock:
-                            self.jobs.remove(job)
-                        continue
+                    kind = relation(sender['scope'], receiver['scope'])
                     target = receiver if job['kind'] == 'deliver' else sender
                     if self.store.bot(target['id'])['status'] == 'pensando':
                         continue
@@ -400,14 +478,14 @@ class Application:
                         if job['kind'] == 'deliver':
                             self.store.dm_update(dm['id'], 'entregando')
                             text = f"Message from 🤖 {sender['name']} (@{sender['handle']}): {dm['body']}"
-                            self.start_turn(receiver['id'], text, role='peer', peer={'mode': 'incoming', 'from': sender['handle']},
-                                            chain=dm['chain'], depth=dm['depth'], dm_id=dm['id'])
+                            self.start_turn(receiver['id'], text, role='peer', chain=dm['chain'], depth=dm['depth'], dm_id=dm['id'],
+                                            peer={'mode': 'incoming', 'from': sender['handle'], 'relation': kind, 'task_id': job.get('task_id')})
                         else:
                             outcome = 'answered' if dm['status'] == 'respondido' else 'could not answer'
                             text = (f"Reply from 🤖 {receiver['name']} (@{receiver['handle']}) to your message [{dm['id']}] "
                                     f"(outcome: {outcome}): {dm['reply'] or ''}")
-                            self.start_turn(sender['id'], text[:12000], role='peer', peer={'mode': 'reply', 'from': receiver['handle']},
-                                            chain=dm['chain'], depth=dm['depth'])
+                            self.start_turn(sender['id'], text[:12000], role='peer', chain=dm['chain'], depth=dm['depth'],
+                                            peer={'mode': 'reply', 'from': receiver['handle'], 'relation': kind})
                     except Problem as exc:
                         if exc.status == 409:  # se ocupó en el intervalo: reintentar entrega (aún no se envió nada)
                             with self.store.lock:
@@ -418,7 +496,7 @@ class Application:
                 log.exception('dispatcher')
 
     def relay(self, bot_id, target_id, text):
-        """Joe pide desde la UI que un bot le escriba a un compañero (mismo flujo que message_agent)."""
+        """Joe pide desde la UI que un bot le escriba a otro (mismo flujo que message_agent)."""
         target = self.store.bot(target_id)
         return self.message_agent(bot_id, {'target': target['handle'], 'body': short_text(text, 4000), 'expects_reply': True})
 
@@ -428,11 +506,17 @@ class Application:
             info = self.store.engine_tickets.get(token)
             if not info or info['expires'] < time.time() or info['bot_id'] != data.get('bot_id'):
                 raise Problem('Credencial de herramienta inválida.', 403)
-            bot_id = info['bot_id']
+            bot_id, policy = info['bot_id'], info.get('policy')
         args = data.get('arguments', {})
         if not isinstance(args, dict):
             raise Problem('Argumentos inválidos.')
         name = data.get('tool')
+        # Segunda cerradura (la primera está en el puente): en turnos entre negocios el servidor
+        # tampoco atiende herramientas fuera de la política, aunque alguien las invocara.
+        if policy == 'clean' and name not in ('task_create', 'task_complete'):
+            raise Problem('Sala limpia: en este turno no hay acceso a memoria, archivos ni apps.', 403)
+        if policy == 'no_persist' and name in ('save_file', 'computer_gate', 'open_app'):
+            raise Problem('En este turno no puedes guardar archivos ni usar la computadora.', 403)
         if name == 'computer_gate':
             return self.computer_gate(bot_id, args)
         if name == 'computer_event':
@@ -445,6 +529,10 @@ class Application:
             return {'files': self.store.detail(bot_id)['files']}
         if name == 'task_create':
             return self.store.task(bot_id, args.get('title'))
+        if name == 'task_complete':
+            return self.store.task_complete(bot_id, args.get('task_id'))
+        if name == 'assign_task':
+            return self.assign_task(bot_id, args)
         if name == 'message_agent':
             return self.message_agent(bot_id, args)
         if name == 'drive_list':
@@ -493,7 +581,7 @@ class Application:
         with self.store.lock:
             c = self.store.computer
             if owner == 'agent':
-                if mode not in ('step', 'session'):
+                if mode not in ('step', 'view'):
                     raise Problem('Modo inválido.')
                 if c['owner'] == 'agent' and c['bot_id'] not in (None, bot_id) and c['expires'] > time.time():
                     raise Problem('Otro bot tiene la computadora. Toma el control primero.', 409)
@@ -512,17 +600,97 @@ class Application:
                 log.info('computadora: Joe tomó el control')
         return self.computer_state()
 
-    def computer_gate(self, bot_id, args):
-        """Cada acción de computer_use pasa por aquí ANTES de ejecutarse."""
-        action = str(args.get('action') or '')[:40]
-        summary = str(args.get('summary') or action)[:300]
+    @staticmethod
+    def classify(step, running=None):
+        """'look' = no cambia nada en pantalla · 'effect' = puede cambiar algo. Lista blanca; ante la duda, effect."""
+        action = step.get('action')
+        if action in PASSIVE_ACTIONS:
+            return 'look'
+        if action == 'focus_app':                      # traer al frente una app ya abierta
+            return 'look'
+        if action == 'open_app':                       # abrir una app cerrada puede disparar cosas: solo si ya corre
+            return 'look' if running else 'effect'
+        if action == 'scroll':
+            element = step.get('element')
+            if step.get('modifiers') or step.get('coordinate'):
+                return 'effect'                        # no se sabe qué hay bajo el cursor: no se asume inocuo
+            # Solo sobre un elemento identificado en la última captura y que no sea un control de valor.
+            if isinstance(element, dict) and element.get('known') and element.get('role') not in VALUE_ROLES:
+                return 'look'
+        return 'effect'
+
+    @staticmethod
+    def explain(step):
+        """Texto que Joe lee antes de permitir: qué acción, sobre qué elemento, en qué app y ventana."""
+        action = step.get('action') or ''
+        parts = [ACTION_NAMES.get(action, action)]
+
+        def target(element):
+            if isinstance(element, dict):
+                if not element.get('known'):
+                    return f"elemento #{element.get('index')} (sin identificar)"
+                role = ROLE_NAMES.get(element.get('role'), element.get('role') or 'elemento')
+                return f"{role} «{element['label']}»" if element.get('label') else f"{role} sin nombre (#{element.get('index')})"
+            if isinstance(element, list):
+                return f"punto ({element[0]}, {element[1]}) sin elemento identificado"
+            return ''
+        if action == 'drag':
+            parts.append(f"de {target(step.get('from'))} a {target(step.get('to'))}")
+        elif action == 'type':
+            parts.append('«' + str(step.get('text', '')) + '»')
+        elif action == 'key':
+            parts.append('«' + str(step.get('keys', '')) + '»')
+        elif action == 'set_value':
+            parts.append(f"«{step.get('value', '')}» en {target(step.get('element'))}")
+        elif action in ('open_app', 'focus_app'):
+            parts.append('«' + str(step.get('app', '')) + '»')
+        else:
+            where = target(step.get('element')) or target(step.get('coordinate'))
+            if where:
+                parts.append('en ' + where)
+        if step.get('modifiers'):
+            parts.append('con ' + '+'.join(step['modifiers']))
+        text = ' '.join(p for p in parts if p)
+        where = ' · '.join(x for x in ((step.get('app') and 'app ' + str(step['app'])) if action not in ('open_app', 'focus_app') else '',
+                                       step.get('window') and 'ventana «' + str(step['window'])[:80] + '»') if x)
+        blob = ' '.join(str(v) for v in (text, (step.get('element') or {}).get('label') if isinstance(step.get('element'), dict) else ''))
+        unknown = (isinstance(step.get('element'), dict) and not step['element'].get('known')) or bool(step.get('coordinate'))
+        warning = ('Parece un paso de enviar, borrar, comprar o confirmar.' if SENSITIVE.search(blob)
+                   else 'No se pudo identificar el elemento: mira la pantalla antes de permitir.' if unknown else '')
+        return text[:400], where[:200], warning
+
+    def app_running(self, name):
+        try:
+            listing = subprocess.run(['/usr/bin/lsappinfo', 'list'], capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+        # macOS lista el nombre traducido («Calculadora») y la ruta real (Calculator.app): vale cualquiera de los dos.
+        return bool(re.search(r'^\s*\d+\)\s+"' + re.escape(name) + r'"', listing, re.M | re.I)
+                    or re.search(r'bundle path="[^"]*/' + re.escape(name) + r'\.app"', listing, re.I))
+
+    def computer_gate(self, bot_id, step):
+        """TODA acción de computadora pasa por aquí antes de ejecutarse. Devuelve permitir/negar para ese paso exacto.
+          · Mirar (captura, listar, esperar, desplazar zona no editable, traer app abierta): pasa en ambos modos.
+          · Cualquier otra cosa (clic, tecla, texto, arrastre, valor, abrir app cerrada):
+              modo «solo ver»   → se niega siempre, sin preguntar.
+              modo «paso a paso» → espera a que Joe pulse Permitir para ESE paso; si no, no ocurre."""
+        step = step if isinstance(step, dict) else {}
+        action = str(step.get('action') or '')[:40]
         with self.store.lock:
             c = self.store.computer
             if not self.computer_granted(bot_id):
                 return {'allow': False, 'reason': 'Joe no te ha prestado la computadora (o tomó el control). Pídele que la active.'}
-            if args.get('free') or c['mode'] == 'session':
+            kind = self.classify(step, self.app_running(str(step.get('app') or '')) if action == 'open_app' else None)
+            if kind == 'look':
                 return {'allow': True}
-            pending = {'id': secrets.token_hex(6), 'bot_id': bot_id, 'action': action, 'summary': summary, 'created': time.time(), 'decision': None}
+            text, where, warning = self.explain(step)
+            if c['mode'] != 'step':
+                c['events'].append({'time': time.time(), 'action': action, 'summary': text, 'ok': False, 'blocked': True})
+                del c['events'][:-40]
+                log.info('computadora: bloqueado en solo ver (%s) a %s', action, bot_id)
+                return {'allow': False, 'reason': VIEW_ONLY}
+            pending = {'id': secrets.token_hex(6), 'bot_id': bot_id, 'action': action, 'summary': text, 'where': where,
+                       'warning': warning, 'created': time.time(), 'decision': None}
             c['pending'] = pending
         deadline = time.time() + 150
         with self.gate:
@@ -531,18 +699,25 @@ class Application:
         with self.store.lock:
             if self.store.computer['pending'] is pending:
                 self.store.computer['pending'] = None
-        if pending['decision'] == 'allow' and self.computer_granted(bot_id):
+            allowed = pending['decision'] == 'allow' and self.computer_granted(bot_id) and self.store.computer['mode'] == 'step'
+            if not allowed:
+                self.store.computer['events'].append({'time': time.time(), 'action': action, 'summary': text, 'ok': False, 'blocked': True})
+        log.info('computadora: paso %s de %s -> %s', action, bot_id, 'permitido' if allowed else 'negado')
+        if allowed:
             return {'allow': True}
-        return {'allow': False, 'reason': 'Joe rechazó este paso.' if pending['decision'] == 'deny' else 'Joe no respondió a tiempo; paso cancelado.'}
+        return {'allow': False, 'reason': 'Joe negó este paso. No insistas.' if pending['decision'] == 'deny' else 'Joe no respondió a tiempo; paso cancelado.'}
 
     def open_app(self, bot_id, name):
         """Abre una app instalada. Misma compuerta que cualquier acción de computadora."""
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ .+&_-]{1,60}', name.strip()):
             raise Problem('Nombre de app inválido.')
         name = name.strip()
-        verdict = self.computer_gate(bot_id, {'action': 'open_app', 'summary': f'abrir la app «{name}»'})
+        verdict = self.computer_gate(bot_id, {'action': 'open_app', 'app': name})
         if not verdict.get('allow'):
-            return {'opened': False, 'reason': verdict.get('reason')}
+            reason = verdict.get('reason')
+            if self.store.computer['mode'] == 'view' and reason == VIEW_ONLY:
+                reason = f'En «solo ver» solo puedes traer al frente apps que ya están abiertas, y «{name}» está cerrada. Pide a Joe que la abra o usa «paso a paso».'
+            return {'opened': False, 'reason': reason}
         folders = [Path('/Applications'), Path('/System/Applications'), Path('/System/Applications/Utilities'), Path('/Applications/Utilities')]
         bundle = next((f / (name + '.app') for f in folders if (f / (name + '.app')).is_dir()), None)
         target = ['/usr/bin/open', str(bundle)] if bundle else ['/usr/bin/open', '-a', name]
@@ -551,7 +726,7 @@ class Application:
         except (OSError, subprocess.SubprocessError):
             done = None
         ok = bool(done and done.returncode == 0)
-        self.computer_event(bot_id, {'action': 'open_app', 'summary': f'abrir la app «{name}»', 'ok': ok})
+        self.computer_event(bot_id, {'action': 'open_app', 'app': name, 'ok': ok})
         if not ok:
             return {'opened': False, 'reason': 'macOS no encontró esa app. Usa el nombre exacto que muestra list_apps (suele ser en inglés).'}
         time.sleep(1.5)
@@ -569,10 +744,12 @@ class Application:
             self.gate.notify_all()
         return self.computer_state()
 
-    def computer_event(self, bot_id, args):
+    def computer_event(self, bot_id, step):
+        step = step if isinstance(step, dict) else {}
+        text, _, _ = self.explain(step)
         with self.store.lock:
             events = self.store.computer['events']
-            events.append({'time': time.time(), 'action': str(args.get('action'))[:40], 'summary': str(args.get('summary'))[:200], 'ok': bool(args.get('ok'))})
+            events.append({'time': time.time(), 'action': str(step.get('action'))[:40], 'summary': text[:200], 'ok': bool(step.get('ok'))})
             del events[:-40]
         return {'logged': True}
 
@@ -802,7 +979,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, app.computer_decide(data.get('id'), data.get('decision')))
             parts = path.strip('/').split('/')
             if len(parts) == 3 and parts[:2] == ['api', 'approvals']:
-                result = store.decide(parts[2], data.get('decision'), app.mcp.execute_action)
+                result = store.decide(parts[2], data.get('decision'), app.execute_approved)
                 log.info('aprobación %s: %s -> %s', parts[2], data.get('decision'), result.get('status'))
                 return self.reply(200, result)
             if len(parts) == 4 and parts[:2] == ['api', 'bots']:
@@ -824,6 +1001,8 @@ class Handler(BaseHTTPRequestHandler):
                     result = app.relay(bot_id, data.get('target_id'), data.get('text'))
                 elif action == 'computer':
                     result = app.control(bot_id, data.get('owner'), data.get('mode') or 'step')
+                elif action == 'task-done':
+                    result = store.task_complete(bot_id, data.get('task_id'))
                 elif action == 'drive':
                     result = app.mcp.list(bot_id, data.get('folder_id'), data.get('page_token'))
                 elif action == 'drive-read':

@@ -64,3 +64,9 @@
 .key-status{display:flex;align-items:center;gap:7px;font-size:10px;color:#7d7560;margin:0 0 12px;line-height:1.5}
 .key-status .app-dot{margin-top:0}
 .key-box .btn{font-size:11px;padding:10px 12px}
+.step-what{font-size:12px;font-weight:600;color:#4f4222}
+.step-where{font-size:10px;color:#8a7a52;margin:-4px 0 10px;overflow-wrap:anywhere}
+.step-warning{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:600;color:#a74135;background:#fdeeea;border:1px solid #f3d0c8;border-radius:8px;padding:6px 8px;margin-bottom:10px}
+.step-warning svg{width:12px;height:12px;flex-shrink:0}
+.task-row.done .task-title{text-decoration:line-through;opacity:.6}
+.task-row .icon-btn svg{width:13px;height:13px;margin:0}

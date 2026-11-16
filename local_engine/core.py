@@ -38,7 +38,19 @@ APPROVAL_ACTIONS = {
     'drive_delete': 'Enviar archivo de Drive a la papelera',
     'sheets_append': 'Agregar filas a una hoja',
     'github_issue': 'Crear issue en GitHub',
+    # Solo la crea el servidor (nunca un bot por request_action): texto que cruza entre Guardián y Casa Kiraz.
+    'cross_message': 'Mensaje entre Guardián y Casa Kiraz',
 }
+SIBLINGS = ('guardian', 'casa_kiraz')   # negocios hermanos: jamás comparten memoria ni archivos
+CROSS_MESSAGE_LIMIT = 4000
+
+
+def relation(scope_a, scope_b):
+    """same: mismo negocio · parent: uno es Holding · sibling: Guardián ↔ Casa Kiraz."""
+    if scope_a == scope_b:
+        return 'same'
+    return 'sibling' if {scope_a, scope_b} == set(SIBLINGS) else 'parent'
+
 # Apps cuya cuenta se asigna a UN solo negocio (regla de hierro: no se mezclan).
 EXCLUSIVE_TOOLKITS = ('gmail', 'googlecalendar', 'instagram', 'github')
 # Drive/Sheets comparten cuenta pero quedan cercados por carpeta raíz de cada negocio.
@@ -150,6 +162,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS dms(id TEXT PRIMARY KEY,chain TEXT NOT NULL,depth INTEGER NOT NULL,from_bot TEXT NOT NULL,to_bot TEXT NOT NULL,body TEXT NOT NULL,expects_reply INTEGER NOT NULL,status TEXT NOT NULL,reply TEXT,created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS accounts(toolkit TEXT PRIMARY KEY,account_id TEXT NOT NULL,scope TEXT NOT NULL,label TEXT NOT NULL DEFAULT '');
         ''')
+        if 'origin' not in {row[1] for row in self.db.execute('PRAGMA table_info(tasks)')}:
+            self.db.execute("ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT ''")
         columns={row[1] for row in self.db.execute('PRAGMA table_info(bots)')}
         if 'handle' not in columns:
             self.db.execute('ALTER TABLE bots ADD COLUMN handle TEXT')
@@ -158,6 +172,7 @@ class Store:
         self.db.commit()
         self.sessions = {}
         # Computadora: una sola pantalla física. Joe la presta a UN bot, por tiempo limitado.
+        # mode: 'view' = solo ver (ningún clic/tecla/texto) · 'step' = cada paso con efecto lo aprueba Joe.
         self.computer = {'owner': 'user', 'bot_id': None, 'mode': 'step', 'expires': 0,
                          'events': [], 'pending': None, 'frame_seq': 0}
         self.bot_locks = {}
@@ -181,9 +196,9 @@ class Store:
         return candidate
 
     def teammates(self, bot_id):
-        """Roster nativo: SOLO bots del mismo negocio. Otro negocio no existe para el bot."""
+        """Roster de message_agent: todos los demás bots, con su relación de negocio."""
         me = self.bot(bot_id)
-        return [b for b in self.bots() if b['scope'] == me['scope'] and b['id'] != bot_id]
+        return [dict(b, relation=relation(me['scope'], b['scope'])) for b in self.bots() if b['id'] != bot_id]
 
     def resolve_teammate(self, bot_id, target):
         target = str(target or '').strip().lstrip('@').lower()
@@ -191,15 +206,33 @@ class Store:
             if target in (b['handle'], b['id'], slug(b['name'])):
                 return b
         names = ', '.join('@' + b['handle'] for b in self.teammates(bot_id)) or 'ninguno'
-        raise Problem(f'No existe ese compañero en tu negocio. Compañeros disponibles: {names}.', 404)
+        raise Problem(f'No existe ese bot. Disponibles: {names}.', 404)
 
-    def dm_create(self, from_bot, to_bot, body, expects_reply=True, chain=None, depth=1):
+    def chain_scopes(self, chain):
+        """Negocios que ya participaron en una conversación entre bots."""
+        if not chain:
+            return set()
+        with self.lock:
+            rows = self.db.execute('SELECT DISTINCT b.scope FROM dms d JOIN bots b ON b.id IN (d.from_bot,d.to_bot) WHERE d.chain=?', (chain,)).fetchall()
+        return {r[0] for r in rows}
+
+    def check_route(self, from_bot, to_bot, chain=None, depth=1):
+        """Valida una entrega ANTES de escribir nada (ni mensaje ni tarea). Devuelve la relación."""
         a, b = self.bot(from_bot), self.bot(to_bot)
-        if a['scope'] != b['scope'] or from_bot == to_bot:
-            raise Problem('Aislamiento: mensajes entre unidades de negocio bloqueados.', 403)
+        if from_bot == to_bot:
+            raise Problem('Un bot no puede escribirse a sí mismo.', 400)
         if depth > MAX_DM_HOPS:
             raise Problem(f'Cadena de mensajes demasiado larga (máximo {MAX_DM_HOPS} saltos). Resume y responde a Joe.', 409)
-        body = short_text(body, 16000)
+        kind = relation(a['scope'], b['scope'])
+        # Holding no sirve de puente: una conversación que ya tocó a un hermano nunca llega al otro.
+        touched = self.chain_scopes(chain) | {a['scope']}
+        if kind == 'parent' and b['scope'] in SIBLINGS and (set(SIBLINGS) - {b['scope']}) & touched:
+            raise Problem('Bloqueado: esta conversación ya incluye al otro negocio. Holding no reenvía entre Guardián y Casa Kiraz.', 403)
+        return kind
+
+    def dm_create(self, from_bot, to_bot, body, expects_reply=True, chain=None, depth=1):
+        kind = self.check_route(from_bot, to_bot, chain, depth)
+        body = short_text(body, 16000 if kind == 'same' else CROSS_MESSAGE_LIMIT)
         ident = uuid.uuid4().hex[:12]
         with self.lock:
             self.db.execute('INSERT INTO dms VALUES(?,?,?,?,?,?,?,?,?,?)',
@@ -327,7 +360,7 @@ No hay terminal libre. La computadora solo se usa cuando Joe te la presta. No so
                         p=safe_path(base,str(p.relative_to(base)))
                         files.append({'name':str(p.relative_to(base)),'size':p.stat().st_size})
                     except Problem:pass
-        team=[{'id':t['id'],'name':t['name'],'handle':t['handle']} for t in self.teammates(bot_id)]
+        team=[{'id':t['id'],'name':t['name'],'handle':t['handle'],'scope':t['scope'],'relation':t['relation']} for t in self.teammates(bot_id)]
         return {'bot':b,'messages':messages[-500:],'tasks':tasks,'files':files,'memory':self.memory(bot_id),'approvals':self.approvals(bot_id),'drive':[],'team':team,'dms':self.dms(bot_id)}
 
     def save_file(self,bot_id,name,content):
@@ -345,12 +378,21 @@ No hay terminal libre. La computadora solo se usa cuando Joe te la presta. No so
         try:return {'name':name,'content':p.read_text(encoding='utf-8')}
         except UnicodeError:raise Problem('Este visor admite texto UTF-8.')
 
-    def task(self,bot_id,title):
+    def task(self,bot_id,title,origin=''):
         self.bot(bot_id);title=short_text(title,300)
-        task={'id':uuid.uuid4().hex,'bot_id':bot_id,'title':title,'status':'pendiente'}
+        task={'id':uuid.uuid4().hex[:12],'bot_id':bot_id,'title':title,'status':'pendiente','origin':str(origin)[:80]}
         with self.lock:
-            self.db.execute('INSERT INTO tasks VALUES(:id,:bot_id,:title,:status)',task);self.db.commit()
+            self.db.execute('INSERT INTO tasks(id,bot_id,title,status,origin) VALUES(:id,:bot_id,:title,:status,:origin)',task);self.db.commit()
         return task
+
+    def task_complete(self,bot_id,task_id):
+        """Un bot solo puede cerrar tareas de SU lista."""
+        self.bot(bot_id)
+        with self.lock:
+            row=self.db.execute('SELECT * FROM tasks WHERE bot_id=? AND (id=? OR id LIKE ?)',(bot_id,str(task_id),str(task_id)[:12]+'%')).fetchone()
+            if not row:raise Problem('Esa tarea no está en tu lista.',404)
+            self.db.execute("UPDATE tasks SET status='completa' WHERE id=?",(row['id'],));self.db.commit()
+        return {'id':row['id'],'title':row['title'],'status':'completa'}
 
     def profile(self,bot_id,profile):
         self.bot(bot_id)
