@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Voz local JOE HQ: stdin JSON {command:diagnose|transcribe|synthesize,...}.
+"""Dictado local JOE HQ: stdin JSON {command:diagnose|transcribe,...}.
 
 Transcribe fields: input_path, optional language (es by default). Files must be
 inside /Volumes/JOE_HQ. Uses existing faster-whisper and frozen local weights,
-never downloads or installs. VibeVoice reports missing runtime explicitly.
+never downloads or installs. Voice OUTPUT (VibeVoice) lives in tts_worker.py,
+which needs torch and therefore its own environment (.venv-voz).
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ def run(request):
         return {'ok': True, 'diagnosis': state,
                 'limitations': [] if state['tts']['runtime'] else ['VibeVoice tiene pesos locales, pero falta el runtime compatible; TTS no está operativo.']}
     if command == 'synthesize':
-        return {'ok': False, 'error': 'VibeVoice no está operativo: falta un runtime compatible probado. Los pesos locales por sí solos no generan audio.', 'diagnosis': state}
+        return {'ok': False, 'error': 'La voz de salida corre en local_engine/tts_worker.py con el entorno .venv-voz; este módulo solo dicta.', 'diagnosis': state}
     if command != 'transcribe':
         return {'ok': False, 'error': 'Comando de voz desconocido.'}
     if not state['stt']['runtime'] or not state['stt']['weights']:
