@@ -52,6 +52,7 @@
   async function api(path, data, options = {}) {
     const headers = {'Accept':'application/json'};
     if (data !== undefined) {headers['Content-Type']='application/json';if(S.csrf) headers['X-CSRF-Token']=S.csrf;}
+    if (S.build) headers['X-JOE-Build']=S.build;
     const response = await fetch(path,{method:data === undefined?'GET':'POST',headers,credentials:'same-origin',cache:'no-store',...(data === undefined?{}:{body:JSON.stringify(data)}),signal:AbortSignal.timeout(options.timeout || 35000)});
     let result; try {result=await response.json();} catch {result={};}
     if(!response.ok){
@@ -68,9 +69,17 @@
     finally {if(button?.isConnected) button.disabled=false;}
   }
   function dots(thinking=false) {return `<div class="dots-orb ${thinking?'is-thinking':''}" aria-hidden="true">${'<i></i>'.repeat(49)}</div>`;}
+  // Si el servidor se actualizó, esta pestaña trae una interfaz vieja: se recarga sola (una vez cada 20 s como máximo).
+  function reloadForUpdate(){
+    if(S.memoryDirty||(S.recorder&&S.recorder.state==='recording')){toast('Hay una versión nueva de JOE HQ. Guarda tus cambios y recarga la página.',true);return;}
+    let last=0;try{last=Number(sessionStorage.getItem('joe-reload')||0);sessionStorage.setItem('joe-reload',String(Date.now()));}catch{}
+    if(Date.now()-last<20000){toast('Hay una versión nueva de JOE HQ. Recarga la página (Cmd+R).',true);return;}
+    location.reload();
+  }
   async function session() {
     try {
       S.session=await api('/api/session');S.csrf=S.session.csrf||'';
+      if(!S.build)S.build=S.session.build||'';else if(S.session.build&&S.session.build!==S.build){reloadForUpdate();return;}
       if(S.session.authenticated) {renderShell();await refresh();}
       else renderLogin(Boolean(S.session.setupRequired));
     } catch(error) {$('#app').innerHTML=`<div class="boot"><div class="brandmark">J<span>·</span></div><p>No se pudo abrir JOE HQ</p><p class="form-note">${esc(error.message)}</p><button class="btn" data-action="retry">Reintentar</button></div>`;}
@@ -91,6 +100,7 @@
     S.polling=true;
     try {
       const state=await api('/api/state');S.state=state;
+      if(state.build&&S.build&&state.build!==S.build){reloadForUpdate();return;}
       if(!state.bots?.some(b=>b.id===S.selected)) S.selected=state.selected || state.bots?.[0]?.id || null;
       renderSidebar();
       if(S.selected){
@@ -185,6 +195,10 @@
   const scopeNames={guardian:'Guardián',casa_kiraz:'Casa Kiraz',holding:'Holding',ninguno:'Sin asignar'};
   const ago=t=>{if(!t)return 'sin probar en esta sesión';const s=Math.max(0,Math.round(Date.now()/1000-t));return s<90?'verificado hace instantes':s<3600?`verificado hace ${Math.round(s/60)} min`:`verificado hace ${Math.round(s/3600)} h`;};
   async function loadApps(force=false){S.appsLoading=true;try{S.apps=await api('/api/apps'+(force?'?refresh=1':''),undefined,{timeout:120000});}catch(error){S.apps={apps:[],error:error.message,auth:''};}finally{S.appsLoading=false;S.detailKey='';if(S.tab==='connections')renderPanel(true);}}
+  function keyHTML(data){
+    const has=Boolean(data?.has_key);
+    return `<section class="key-box ${has?'is-set':''}" id="composio-key" aria-labelledby="key-title"><h4 id="key-title">${icon('lock')}Credencial de Composio</h4><p class="key-status"><span class="app-dot ${has?'on':'idle'}"></span>${has?'Llave propia guardada en .env':'Sin llave propia'} · En uso: ${esc(data?.auth||'consultando…')}</p><form id="key-form" class="stack"><label class="field">${has?'Reemplazar la llave guardada':'Llave de Composio (empieza con ck_)'}<input name="key" id="key-input" type="password" autocomplete="off" spellcheck="false" maxlength="200" placeholder="ck_…" required></label><button class="btn full" type="submit" id="key-save">${icon('lock')}${has?'Reemplazar llave':'Guardar solo en .env'}</button><p class="panel-note">${has?'La llave vive solo en el archivo .env de esta Mac. Nunca se muestra de vuelta.':'Se prueba contra Composio antes de guardarse. Sin llave, la app depende de que Hermes esté abierto para renovar su sesión cada hora.'}</p></form></section>`;
+  }
   function appsHTML(bot,detail){
     const data=S.apps;const folders={guardian:['02_GUARDIAN_ACCESOS_CNC'],casa_kiraz:['03_CASA_KIRAZ'],holding:['01_PLAN_DE_VIDA_Y_RETIRO_CHAPALA','04_SISTEMAS_MARKETING_Y_VIRALIDAD']}[bot.scope]||[];
     const caps=S.state?.capabilities||{};const voice=caps.voice||{};
@@ -194,7 +208,7 @@
       const sub=!a.active?'No conectada en Composio':a.exclusive?`${esc(label)} · ${a.assigned_scope?`asignada a ${esc(scopeNames[a.assigned_scope]||a.assigned_scope)}`:'sin asignar: ningún bot la usa'}`:`${esc(label)} · cercada a ${folders.map(esc).join(', ')}`;
       const select=a.exclusive&&a.active&&account?`<label class="assign"><span>Negocio dueño</span><select data-assign="${esc(a.toolkit)}" data-account="${esc(account.id)}" aria-label="Negocio dueño de ${esc(a.name)}">${['ninguno','guardian','casa_kiraz','holding'].map(sc=>`<option value="${sc}" ${(a.assigned_scope||'ninguno')===sc?'selected':''}>${scopeNames[sc]}</option>`).join('')}</select></label>`:'';
       return `<div class="connection-row app-row"><span class="app-dot ${usable?'on':a.active?'idle':'off'}"></span><div class="grow"><div class="connection-name">${esc(a.name)}${a.name==='Drive'?' · Docs':''} <span class="tag">${usable?'Disponible para este bot':a.active?'No disponible para este bot':'Desconectada'}</span></div><div class="connection-sub">${sub}</div>${select}</div></div>`;}).join('');
-    return `<div class="panel-heading"><h3>Apps de ${esc(scopes[bot.scope]||bot.scope)}</h3><button class="btn secondary small" data-action="apps-refresh">${icon('refresh')}Actualizar</button></div>${data?.error?`<div class="banner error inline">${esc(data.error)}</div>`:''}<div class="capability-box"><div class="row">${icon('lock')}Cada negocio, sus cuentas</div>Drive y Sheets se limitan a la carpeta del negocio. Gmail, Calendar, Instagram y GitHub pertenecen a un solo negocio: tú eliges cuál.</div>${rows}<button class="btn secondary full mt-17" data-action="drive">${icon('folder')}Explorar el Drive de este negocio</button><div id="drive-results">${driveHTML(detail.drive)}</div><div class="relay-box"><h4>Credencial de Composio</h4><p class="panel-note">En uso: ${esc(data?.auth||'—')}.</p><form id="key-form" class="stack"><label class="field">${data?.has_key?'Reemplazar la llave guardada':'Llave de Composio (empieza con ck_)'}<input name="key" type="password" autocomplete="off" spellcheck="false" maxlength="200" placeholder="ck_…" required></label><button class="btn secondary" type="submit">${icon('lock')}${data?.has_key?'Reemplazar llave':'Guardar solo en .env'}</button><p class="panel-note">${data?.has_key?'La llave vive solo en app/.env de esta Mac. Nunca se muestra de vuelta.':'Se prueba contra Composio antes de guardarla. Sin llave, la app depende de que Hermes esté abierto para renovar su sesión cada hora.'}</p></form></div><div class="relay-box"><h4>Voz local</h4><label class="field">Voz de VibeVoice<select id="voice-select" aria-label="Voz">${(voice.voices||[]).map(v=>`<option value="${esc(v)}" ${v===voice.voice?'selected':''}>${esc(v)}</option>`).join('')}</select></label><p class="panel-note">Dictado: faster-whisper. Salida: VibeVoice-1.5B. Todo en esta Mac; la primera frase tarda cerca de un minuto en cargar.</p></div><div class="capability-box mt-18"><div class="row">${icon('computer')}Estado real</div>Hermes (openai-codex): ${esc(caps.hermes?.error?`error: ${caps.hermes.error}`:ago(caps.hermes?.verified_at))}<br>Composio: ${esc(caps.composio?.error||ago(caps.composio?.verified_at))}<br>Dictado: ${esc(ago(voice.stt_verified_at))}<br>Voz: ${esc(voice.tts_error||ago(voice.tts_verified_at))}${voice.loaded?' · motor cargado':''}</div><p class="panel-note">Enviar, publicar, crear eventos o borrar siempre requiere una aprobación individual.</p>`;
+    return `<div class="panel-heading"><h3>Apps de ${esc(scopes[bot.scope]||bot.scope)}</h3><button class="btn secondary small" data-action="apps-refresh">${icon('refresh')}Actualizar</button></div>${data?.error?`<div class="banner error inline">${esc(data.error)}</div>`:''}${keyHTML(data)}<div class="capability-box"><div class="row">${icon('lock')}Cada negocio, sus cuentas</div>Drive y Sheets se limitan a la carpeta del negocio. Gmail, Calendar, Instagram y GitHub pertenecen a un solo negocio: tú eliges cuál.</div>${rows}<button class="btn secondary full mt-17" data-action="drive">${icon('folder')}Explorar el Drive de este negocio</button><div id="drive-results">${driveHTML(detail.drive)}</div><div class="relay-box"><h4>Voz local</h4><label class="field">Voz de VibeVoice<select id="voice-select" aria-label="Voz">${(voice.voices||[]).map(v=>`<option value="${esc(v)}" ${v===voice.voice?'selected':''}>${esc(v)}</option>`).join('')}</select></label><p class="panel-note">Dictado: faster-whisper. Salida: VibeVoice-1.5B. Todo en esta Mac; la primera frase tarda cerca de un minuto en cargar.</p></div><div class="capability-box mt-18"><div class="row">${icon('computer')}Estado real</div>Hermes (openai-codex): ${esc(caps.hermes?.error?`error: ${caps.hermes.error}`:ago(caps.hermes?.verified_at))}<br>Composio: ${esc(caps.composio?.error||ago(caps.composio?.verified_at))}<br>Dictado: ${esc(ago(voice.stt_verified_at))}<br>Voz: ${esc(voice.tts_error||ago(voice.tts_verified_at))}${voice.loaded?' · motor cargado':''}</div><p class="panel-note">Enviar, publicar, crear eventos o borrar siempre requiere una aprobación individual.</p>`;
   }
   async function selectBot(botId){
     if(botId===S.selected){$('.app')?.classList.remove('show-sidebar');return;}

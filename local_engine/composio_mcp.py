@@ -72,10 +72,10 @@ def unpack(result):
     return result
 
 
-def read_env_key():
+def read_env_key(path=None):
     """Lee COMPOSIO_API_KEY de app/.env (única llave permitida). No usa variables de la terminal."""
     try:
-        for line in ENV_FILE.read_text(encoding='utf-8').splitlines():
+        for line in Path(path or ENV_FILE).read_text(encoding='utf-8').splitlines():
             line = line.strip()
             if line.startswith('COMPOSIO_API_KEY='):
                 value = line.split('=', 1)[1].strip().strip('"').strip("'")
@@ -86,23 +86,24 @@ def read_env_key():
     return None
 
 
-def save_env_key(value):
+def save_env_key(value, path=None):
     """Guarda la llave SOLO en app/.env (0600, fuera de Git). Devuelve el tipo de llave."""
     if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_\-]{12,200}', value.strip()):
         raise Problem('La llave no tiene un formato válido.')
     value = value.strip()
+    target = Path(path or ENV_FILE)
     lines = []
     try:
-        lines = [l for l in ENV_FILE.read_text(encoding='utf-8').splitlines() if not l.strip().startswith('COMPOSIO_API_KEY=')]
+        lines = [l for l in target.read_text(encoding='utf-8').splitlines() if not l.strip().startswith('COMPOSIO_API_KEY=')]
     except OSError:
         pass
     lines.append('COMPOSIO_API_KEY=' + value)
-    temp = ENV_FILE.with_name('.env.tmp')
+    temp = target.with_name(target.name + '.tmp')
     fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w', encoding='utf-8') as handle:
         handle.write('\n'.join(lines) + '\n')
-    os.replace(temp, ENV_FILE)
-    os.chmod(ENV_FILE, 0o600)
+    os.replace(temp, target)
+    os.chmod(target, 0o600)
     return 'consumidor (ck_)' if value.startswith('ck_') else 'otro formato'
 
 
@@ -138,8 +139,13 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class ComposioMCP:
-    def __init__(self, store, config):
+    def __init__(self, store, config, endpoint=None, env_file=None):
         self.store = store
+        # Producción: Composio real y app/.env. El ensayo usa su propio .env (nunca el real) y,
+        # solo para pruebas de interfaz, puede apuntar a un Composio simulado en 127.0.0.1.
+        self.endpoint = endpoint or ENDPOINT
+        self.env_file = env_file
+        self.simulated = bool(endpoint)
         try:
             self.roots = json.loads(Path(config).read_text(encoding='utf-8'))
         except (OSError, ValueError):
@@ -156,8 +162,17 @@ class ComposioMCP:
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     # ------------------------------------------------------------------ credencial
+    def key(self):
+        return read_env_key(self.env_file)
+
+    def save_key(self, value):
+        self.check_key(value)  # se valida contra Composio ANTES de escribir el archivo
+        kind = save_env_key(value, self.env_file)
+        self.session_id, self.tool_names, self.cache = None, {}, None
+        return kind
+
     def credential(self):
-        key = read_env_key()
+        key = self.key()
         if key:
             return 'llave', {'x-consumer-api-key': key}
         try:
@@ -165,6 +180,8 @@ class ComposioMCP:
             token = data.get('access_token')
             if not isinstance(token, str) or not token:
                 raise ValueError()
+            if self.simulated:
+                raise ValueError()  # jamás se envía el OAuth real de Hermes a un servidor simulado
         except (OSError, ValueError):
             raise Problem('Composio sin credencial: guarda tu llave en Apps o inicia sesión de Composio en Hermes.', 503)
         if float(data.get('expires_at') or 0) and float(data['expires_at']) < time.time():
@@ -181,7 +198,7 @@ class ComposioMCP:
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream',
                    'MCP-Protocol-Version': PROTOCOL, 'x-consumer-api-key': value.strip()}
         try:
-            with self.opener.open(urllib.request.Request(ENDPOINT, data=body, headers=headers, method='POST'), timeout=30) as response:
+            with self.opener.open(urllib.request.Request(self.endpoint, data=body, headers=headers, method='POST'), timeout=30) as response:
                 response.read(100000)
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):
@@ -192,7 +209,7 @@ class ComposioMCP:
             raise Problem('No se pudo contactar a Composio para probar la llave; no se guardó. Revisa internet.', 503)
 
     def auth_mode(self):
-        if read_env_key():
+        if self.key():
             return 'Llave propia en .env'
         if TOKEN_FILE.is_file():
             return 'OAuth de Hermes (solo lectura, se renueva cuando Hermes está abierto)'
@@ -209,7 +226,7 @@ class ComposioMCP:
                    'MCP-Protocol-Version': PROTOCOL, **auth}
         if self.session_id:
             headers['Mcp-Session-Id'] = self.session_id
-        req = urllib.request.Request(ENDPOINT, data=json.dumps(payload).encode(), headers=headers, method='POST')
+        req = urllib.request.Request(self.endpoint, data=json.dumps(payload).encode(), headers=headers, method='POST')
         parsed = None
         try:
             with self.opener.open(req, timeout=timeout) as response:
@@ -346,7 +363,7 @@ class ComposioMCP:
                 item['assigned_account'] = assigned.get(key, {}).get('account_id')
             apps.append(item)
         return {'apps': apps, 'auth': self.auth_mode(), 'error': error, 'checked': self.last_ok,
-                'has_key': bool(read_env_key())}
+                'has_key': bool(self.key()), 'simulated': self.simulated}
 
     # ------------------------------------------------------------------ cuenta permitida por bot
     def account_for(self, bot_id, toolkit):

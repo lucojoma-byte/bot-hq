@@ -412,6 +412,31 @@ class HTTPMemoryTests(Fixture):
         self.assertEqual(self.store.computer['owner'], 'user')
         self.assertEqual(self.store.account_map(), {})
 
+    def test_stale_tabs_are_told_to_reload(self):
+        import server
+        headers = self.session_headers()
+        state = self.request(headers=headers)['data']
+        self.assertEqual(state['build'], server.build_id())
+        self.assertEqual(self.request(path='/api/session')['data']['build'], state['build'])
+        # Pestaña anterior a una actualización: no manda la huella (o manda una vieja).
+        for stale in ({}, {'X-JOE-Build': 'huella-antigua'}):
+            detail = self.request(path='/api/bots/guardian', headers={**headers, **stale})['data']
+            self.assertEqual(detail['error'], server.STALE_TAB)
+        fresh = self.request(path='/api/bots/guardian', headers={**headers, 'X-JOE-Build': state['build']})['data']
+        self.assertNotIn('error', fresh)
+
+    def test_staging_never_touches_the_real_env_file(self):
+        staged = Application(self.store, 8788, staging=True)
+        self.assertEqual(staged.mcp.env_file, self.root / '.env')
+        self.assertIsNone(self.app.mcp.env_file)  # producción: app/.env
+        with patch.object(staged.mcp, 'check_key'):
+            staged.mcp.save_key('ck_llave_ficticia_0123456789')
+        self.assertEqual(staged.mcp.key(), 'ck_llave_ficticia_0123456789')
+        self.assertEqual(staged.mcp.auth_mode(), 'Llave propia en .env')
+        with patch.dict('os.environ', {'JOE_HQ_COMPOSIO_SIMULADO': 'https://sitio-externo.example/mcp'}):
+            self.problem(503, Application, self.store, 8788, True)
+            self.assertEqual(Application(self.store, 8787, False).mcp.endpoint, composio_mcp.ENDPOINT)
+
     def test_host_origin_and_cross_site_are_rejected(self):
         for headers in ({'Host': 'evil.invalid'}, {'Host': 'localhost:8787.evil.invalid'},
                         {'Origin': 'https://evil.invalid'}, {'Sec-Fetch-Site': 'cross-site'}):

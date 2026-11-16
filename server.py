@@ -33,7 +33,7 @@ import time
 from urllib.parse import urlsplit, unquote, parse_qs
 from local_engine.core import (Store, Problem, ROOT, STAGING_ROOT, PROFILES, SCOPES, MODEL_ALLOWLIST, APPROVAL_ACTIONS,
                                EXCLUSIVE_TOOLKITS, preflight, cache_environment, safe_path, short_text, atomic_write)
-from local_engine.composio_mcp import ComposioMCP, TOKEN_FILE, TOOLKITS, save_env_key
+from local_engine.composio_mcp import ComposioMCP, TOKEN_FILE, TOOLKITS
 
 APP = Path(__file__).resolve().parent
 HERMES_PYTHON = Path('/Users/m4/.hermes/installs/038c51e759d66ce1/environments/e5a1728f585a44cdb63518d0e4d705e5/venv/bin/python')
@@ -42,7 +42,22 @@ VERSION = '0.2.0'
 TURN_SECONDS, COMPUTER_TURN_SECONDS = 330, 900
 GRANT_SECONDS = 15 * 60
 MAX_CHAIN_MESSAGES = 8
+STATIC_FILES = ('index.html', 'app.js', 'styles.css', 'upstream-tokens.css')
+STALE_TAB = 'Esta pestaña tiene una versión anterior de JOE HQ. Recarga la página (Cmd+R) para ver la actual.'
 log = logging.getLogger('joe_hq')
+
+
+def build_id():
+    """Huella de la interfaz en disco. Si cambia, las pestañas abiertas deben recargarse."""
+    import hashlib
+    digest = hashlib.sha256()
+    for name in STATIC_FILES:
+        try:
+            info = (APP / 'local_web' / name).stat()
+            digest.update(f'{name}:{info.st_mtime_ns}:{info.st_size};'.encode())
+        except OSError:
+            digest.update(name.encode())
+    return digest.hexdigest()[:16]
 
 
 def process_env(root, home=None):
@@ -169,7 +184,11 @@ class Application:
         self.store = store
         self.port = port
         self.staging = staging
-        self.mcp = ComposioMCP(store, APP / 'drive-folders.json')
+        endpoint = os.environ.get('JOE_HQ_COMPOSIO_SIMULADO') if staging else None
+        if endpoint and not re.fullmatch(r'http://127\.0\.0\.1:\d{2,5}/mcp', endpoint):
+            raise Problem('El Composio simulado solo puede vivir en 127.0.0.1.', 503)
+        self.mcp = ComposioMCP(store, APP / 'drive-folders.json', endpoint=endpoint,
+                               env_file=(store.root / '.env') if staging else None)
         self.voice_out = Voice(store)
         self.login_attempts = []
         self.login_lock = threading.Lock()
@@ -210,7 +229,7 @@ class Application:
     def state(self):
         return {'bots': self.store.bots(), 'profiles': PROFILES, 'capabilities': self.capabilities(),
                 'approvals': self.store.approvals(), 'computer': self.computer_state(),
-                'actions': APPROVAL_ACTIONS, 'staging': self.staging,
+                'actions': APPROVAL_ACTIONS, 'staging': self.staging, 'build': build_id(),
                 'version': VERSION + (' · ENSAYO' if self.staging else '')}
 
     def run_json(self, script, payload, timeout=180):
@@ -689,7 +708,8 @@ class Handler(BaseHTTPRequestHandler):
                     s = self.authenticated()
                 except Problem:
                     s = None
-                return self.reply(200, {'authenticated': bool(s), 'setupRequired': not bool(self.app.store.setting('password')), 'csrf': s['csrf'] if s else None})
+                return self.reply(200, {'authenticated': bool(s), 'setupRequired': not bool(self.app.store.setting('password')),
+                                        'csrf': s['csrf'] if s else None, 'build': build_id()})
             if path.startswith('/api/'):
                 self.authenticated()  # TODA la API exige la contraseña local
                 if path == '/api/state':
@@ -706,6 +726,10 @@ class Handler(BaseHTTPRequestHandler):
                     if len(parts) == 3:
                         detail = self.app.store.detail(bot_id)
                         detail['files'] = [f for f in detail['files'] if not f['name'].startswith(('audio/', 'dictados/'))]
+                        # Una pestaña abierta antes de una actualización no manda la huella actual:
+                        # se le avisa en su propia barra de estado (también la interfaz antigua la muestra).
+                        if self.headers.get('X-JOE-Build') != build_id():
+                            detail['error'] = STALE_TAB
                         return self.reply(200, detail)
                     if parts[3] == 'files':
                         return self.reply(200, self.app.store.read_file(bot_id, parse_qs(parsed.query).get('name', [''])[0]))
@@ -765,9 +789,7 @@ class Handler(BaseHTTPRequestHandler):
                 log.info('apps: %s asignada a %s', data.get('toolkit'), data.get('scope'))
                 return self.reply(200, app.mcp.status())
             if path == '/api/apps/key':
-                app.mcp.check_key(data.get('key'))  # se valida contra Composio antes de escribir .env
-                kind = save_env_key(data.get('key'))
-                app.mcp.session_id, app.mcp.tool_names, app.mcp.cache = None, {}, None
+                kind = app.mcp.save_key(data.get('key'))  # valida contra Composio y solo entonces escribe .env
                 status = app.mcp.status(force=True)
                 log.info('apps: llave Composio guardada en .env (%s)', kind)
                 return self.reply(200, {**status, 'saved': True, 'kind': kind})

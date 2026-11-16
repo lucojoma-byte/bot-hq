@@ -56,3 +56,11 @@
 @media (prefers-reduced-motion:reduce){.dots-orb.is-thinking i,.thinking .dots i,.live-tag .dot,.dot.live{animation:none}}
 .bubble code{font-family:var(--font-mono-stack,ui-monospace,Menlo,monospace);font-size:.92em;background:#0000000d;padding:1px 4px;border-radius:4px}
 .bubble strong{font-weight:650}
+.key-box{border:1px solid #e6c98a;background:#fff9ea;border-radius:12px;padding:14px;margin-bottom:16px}
+.key-box.is-set{border-color:#cfdcc4;background:#f4f8ef}
+.key-box h4{display:flex;align-items:center;gap:7px;margin:0 0 8px;font-size:11px;font-weight:600;color:#7a6330}
+.key-box.is-set h4{color:#5d7a52}
+.key-box h4 svg{width:13px;height:13px}
+.key-status{display:flex;align-items:center;gap:7px;font-size:10px;color:#7d7560;margin:0 0 12px;line-height:1.5}
+.key-status .app-dot{margin-top:0}
+.key-box .btn{font-size:11px;padding:10px 12px}
