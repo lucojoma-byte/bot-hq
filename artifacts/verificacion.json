@@ -65,7 +65,7 @@
  "git": {
   "fork": "https://github.com/lucojoma-byte/bot-hq",
   "rama": "joe-hq",
-  "commits_adaptacion": 20,
+  "commits_adaptacion": 22,
   "rama_principal_del_fork": "joe-hq"
  },
  "pendiente_de_joe": [

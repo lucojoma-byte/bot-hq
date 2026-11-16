@@ -19,7 +19,7 @@ No se usó ninguna API de modelos de pago. No se modificó `~/.hermes`.
 
 | # | Hallazgo | Resultado | Evidencia |
 |---|---|---|---|
-| 1 | Fork sin commits | **Corregido.** 20 commits de la adaptación en `lucojoma-byte/bot-hq`, rama `joe-hq`. | `git log`; GitHub compara `main...joe-hq`. |
+| 1 | Fork sin commits | **Corregido.** 22 commits de la adaptación en `lucojoma-byte/bot-hq`, rama `joe-hq`. | `git log`; GitHub compara `main...joe-hq`. |
 | 2 | MCP de Composio "falló por DNS" | **Corregido.** No era DNS: el sandbox de la sesión anterior bloqueaba toda la red. En esta Mac resuelve y conecta. | Lecturas reales de las 6 apps. |
 | 3 | VibeVoice no corre | **Corregido.** Faltaba un Python con `torch` y `vibevoice` (el de Hermes no los trae) y el tokenizador se buscaba en internet. | Audio generado y dictado de vuelta. |
 | 4 | Pide contraseña en incógnito | **Se mantiene.** Toda la API responde 401 sin sesión, incluidas las rutas nuevas. | Captura 01; pruebas HTTP. |
