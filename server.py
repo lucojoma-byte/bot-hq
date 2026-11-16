@@ -40,7 +40,7 @@ from local_engine.computer_payload import freeze_payload, verify_payload, Payloa
 APP = Path(__file__).resolve().parent
 HERMES_PYTHON = Path('/Users/m4/.hermes/installs/038c51e759d66ce1/environments/e5a1728f585a44cdb63518d0e4d705e5/venv/bin/python')
 VOICE_PYTHON = APP / '.venv-voz/bin/python'
-VERSION = '0.3.1'
+VERSION = '0.3.2'
 TURN_SECONDS, COMPUTER_TURN_SECONDS = 330, 900
 GRANT_SECONDS = 15 * 60
 MAX_CHAIN_MESSAGES = 8
@@ -71,6 +71,23 @@ VIEW_ONLY = ('Modo «solo ver»: no puedes hacer clic, teclear ni escribir; el s
              'que hace falta y pídele prestar la computadora en «paso a paso».')
 STALE_TAB = 'Esta pestaña tiene una versión anterior de JOE HQ. Recarga la página (Cmd+R) para ver la actual.'
 log = logging.getLogger('joe_hq')
+
+
+LOCKED_MAC = ('La Mac está con la pantalla bloqueada: macOS no deja ver ni tocar nada. '
+              'Pide a Joe que la desbloquee y vuelve a intentarlo; no insistas mientras tanto.')
+_lock_probe = {'time': 0.0, 'locked': False}
+
+
+def screen_locked():
+    """True si la sesión de macOS está en pantalla de bloqueo (consulta cada 3 s como máximo)."""
+    if time.time() - _lock_probe['time'] > 3:
+        try:
+            out = subprocess.run(['/usr/sbin/ioreg', '-n', 'Root', '-d1'], capture_output=True, text=True, timeout=5).stdout
+            _lock_probe['locked'] = bool(re.search(r'"CGSSessionScreenIsLocked"\s*=\s*Yes', out))
+        except (OSError, subprocess.SubprocessError):
+            _lock_probe['locked'] = False   # si no se puede saber, no se inventa un bloqueo
+        _lock_probe['time'] = time.time()
+    return _lock_probe['locked']
 
 
 def build_id():
@@ -249,7 +266,7 @@ class Application:
             c = self.store.computer
             if c['owner'] == 'agent' and c['expires'] <= time.time():
                 self.revoke('El permiso venció.')
-            return {'owner': c['owner'], 'bot_id': c['bot_id'], 'mode': c['mode'],
+            return {'owner': c['owner'], 'bot_id': c['bot_id'], 'mode': c['mode'], 'locked': screen_locked(),
                     'seconds_left': max(0, int(c['expires'] - time.time())) if c['owner'] == 'agent' else 0,
                     'events': c['events'][-12:],
                     'pending': c['pending'] and {k: c['pending'][k] for k in ('id', 'action', 'summary', 'where', 'warning', 'created', 'payload', 'digest')}}
@@ -400,8 +417,7 @@ class Application:
                 self.jobs.append({'kind': 'reply', 'dm': dm_id})
 
     def message_agent(self, bot_id, args, task=None):
-        """message_agent / assign_task. Mismo negocio y Holding↔hijo: entrega directa.
-        Guardián ↔ Casa Kiraz: el texto exacto espera el botón de Joe antes de cruzar."""
+        """Entrega JOE HQ con política de v1: Guardián y Casa Kiraz nunca se cruzan."""
         sender = self.store.bot(bot_id)
         target = self.store.resolve_teammate(bot_id, args.get('target'))
         kind = target['relation']
@@ -412,15 +428,7 @@ class Application:
             if ctx['chain'] and self.store.db.execute('SELECT COUNT(*) FROM dms WHERE chain=?', (ctx['chain'],)).fetchone()[0] >= MAX_CHAIN_MESSAGES:
                 raise Problem('Esta conversación entre bots llegó a su límite. Resume el resultado para Joe.', 409)
             if kind == 'sibling':
-                payload = {'de': sender['name'], 'para': target['name'], 'mensaje': body, 'de_id': bot_id, 'para_id': target['id'],
-                           'espera_respuesta': expects}
-                if task:
-                    payload['tarea'] = task
-                made = self.store.approval(bot_id, 'cross_message', payload)
-                self.store.add_message(bot_id, 'system', f"Mensaje para {target['name']} (otro negocio) en espera: Joe debe aprobar el texto en la pestaña Aprobar.")
-                log.info('dm: %s -> %s espera aprobación de Joe (%s)', bot_id, target['id'], made['id'])
-                return {'status': 'awaiting_joe_approval', 'approval_id': made['id'], 'target': target['handle'],
-                        'note': 'Not delivered yet. Joe must approve the exact text. Finish your turn and tell Joe.'}
+                raise Problem('Bloqueado: Guardián Ventas y Casa Kiraz no pueden enviarse mensajes ni tareas directamente.', 403)
             ident = self.deliver(bot_id, target, body, expects, ctx['chain'], ctx['depth'] + 1, task)
             ctx['sent'] = ctx.get('sent', 0) + 1
         return {'status': 'queued', 'delivery_id': ident, 'target': target['handle'],
@@ -453,10 +461,7 @@ class Application:
         sender, target = self.store.bot(payload.get('de_id')), self.store.bot(payload.get('para_id'))
         if sender['id'] != bot_id or relation(sender['scope'], target['scope']) != 'sibling':
             raise Problem('El mensaje ya no corresponde a estos bots.', 409)
-        target = dict(target, relation='sibling')
-        ident = self.deliver(bot_id, target, payload.get('mensaje'), bool(payload.get('espera_respuesta', True)), None, 1, payload.get('tarea'))
-        return {'hecho': 'Mensaje entregado a ' + target['name'], 'delivery_id': ident,
-                'nota': 'El bot destino lo atiende en sala limpia: sin su memoria, historial, archivos ni apps.'}
+        raise Problem('Bloqueado: esta versión no permite mensajes ni tareas directos entre Guardián Ventas y Casa Kiraz.', 403)
 
     def dispatcher(self):
         """Entrega mensajes entre bots cuando el destinatario está libre."""
@@ -684,6 +689,8 @@ class Application:
               modo «solo ver»   → se niega siempre, sin preguntar.
               modo «paso a paso» → espera a que Joe pulse Permitir para ESE paso; si no, no ocurre."""
         step = dict(step) if isinstance(step, dict) else {}
+        if screen_locked():   # solo niega: con la Mac bloqueada el driver no ve elementos ni entrega teclas
+            return {'allow': False, 'reason': LOCKED_MAC}
         try:
             tool = (step.get('payload') or {}).get('tool')
             if tool not in ('computer_use', 'open_app'):

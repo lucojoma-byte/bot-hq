@@ -27,6 +27,8 @@ from local_engine import composio_mcp
 from local_engine.composio_mcp import ComposioMCP
 from server import Application, Handler, HERMES_PYTHON
 
+import server as _server
+REAL_LOCK = _server.screen_locked   # la función real, antes de que las pruebas la sustituyan
 RUN_ROOT = APP / '.test-runtime' / ('unittest-' + uuid.uuid4().hex)
 RUN_ROOT.mkdir(parents=True, exist_ok=False)
 
@@ -38,6 +40,10 @@ class Fixture(unittest.TestCase):
         preflight(self.root, require_mount=False)
         self.store = Store(self.root)
         self.app = Application(self.store)
+        # Las pruebas no dependen de si esta Mac está bloqueada en el momento de correrlas.
+        locked = patch('server.screen_locked', return_value=False)
+        locked.start()
+        self.addCleanup(locked.stop)
 
     def problem(self, status, function, *args, **kwargs):
         with self.assertRaises(Problem) as caught:
@@ -153,30 +159,27 @@ class StoreIsolationTests(Fixture):
                 self.assertEqual(self.app.jobs.items[-1], {'kind': 'deliver', 'dm': ack['delivery_id'], 'task_id': None})
         self.assertEqual(self.store.approvals(), [])
 
-    def test_guardian_and_kiraz_messages_wait_for_joe(self):
+    def test_guardian_and_kiraz_messages_and_tasks_are_blocked(self):
         self.app.jobs = _Hold()
         for source, target in (('guardian', 'casa_kiraz'), ('casa_kiraz', 'guardian')):
             with self.subTest(source=source):
-                ack = self.app.message_agent(source, {'target': target, 'body': 'Propuesta de promoción conjunta', 'expects_reply': True})
-                self.assertEqual(ack['status'], 'awaiting_joe_approval')
-                self.assertEqual(self.store.dms(source), [])            # nada cruzó todavía
-                self.assertEqual(self.app.jobs.items, [])
-                row = self.store.approvals(source)[0]
-                self.assertEqual((row['action'], row['status'], row['payload']['mensaje']), ('cross_message', 'pendiente', 'Propuesta de promoción conjunta'))
-                self.assertEqual(self.store.decide(row['id'], 'reject', self.app.execute_approved)['status'], 'rechazada')
+                self.problem(403, self.app.message_agent, source, {'target': target, 'body': 'No cruzar', 'expects_reply': True})
+                self.problem(403, self.app.assign_task, source, {'target': target, 'title': 'No cruzar', 'details': 'No cruzar'})
                 self.assertEqual(self.store.dms(source), [])
-        # Aprobado por Joe: se entrega una sola vez.
-        ack = self.app.message_agent('guardian', {'target': 'casa_kiraz', 'body': 'Texto aprobado', 'expects_reply': True})
-        done = self.store.decide(ack['approval_id'], 'approve', self.app.execute_approved)
-        self.assertEqual(done['status'], 'completa')
-        dm = self.store.dm(done['result']['delivery_id'])
-        self.assertEqual((dm['from_bot'], dm['to_bot'], dm['body']), ('guardian', 'casa_kiraz', 'Texto aprobado'))
-        self.assertEqual(len(self.app.jobs.items), 1)
-        self.problem(409, self.store.decide, ack['approval_id'], 'approve', self.app.execute_approved)
+                self.assertEqual(self.store.approvals(source), [])
+                self.assertEqual(self.app.jobs.items, [])
         # Un bot no puede fabricar esa aprobación por request_action, ni mandar textos largos a otro negocio.
         with patch.object(self.app.mcp, 'discover', return_value=FAKE_STATUS):
             self.problem(403, self.app.propose, 'guardian', 'cross_message', {'de_id': 'guardian', 'para_id': 'casa_kiraz', 'mensaje': 'x'})
         self.problem(400, self.app.message_agent, 'guardian', {'target': 'holding', 'body': 'x' * 4001})
+
+    def test_legacy_approved_cross_message_cannot_be_delivered(self):
+        self.app.jobs = _Hold()
+        row = self.store.approval('guardian', 'cross_message', {'de_id': 'guardian', 'para_id': 'casa_kiraz', 'mensaje': 'legacy'})
+        result = self.store.decide(row['id'], 'approve', self.app.execute_approved)
+        self.assertEqual(result['status'], 'fallida')
+        self.assertEqual(self.store.dms('guardian'), [])
+        self.assertEqual(self.app.jobs.items, [])
 
     def test_holding_never_bridges_guardian_and_kiraz(self):
         self.app.jobs = _Hold()
@@ -227,12 +230,10 @@ class StoreIsolationTests(Fixture):
         self.assertIn('[TASK ' + task['id'] + ']', self.store.dm(ack['delivery_id'])['body'])
         self.problem(404, self.store.task_complete, 'guardian', task['id'])      # solo el dueño la cierra
         self.assertEqual(self.store.task_complete('holding', task['id'])['status'], 'completa')
-        # Entre hermanos la tarea también espera a Joe y no aparece antes.
-        ack = self.app.assign_task('guardian', {'target': 'casa_kiraz', 'title': 'Promo conjunta', 'details': 'Viernes'})
-        self.assertEqual(ack['status'], 'awaiting_joe_approval')
-        self.assertEqual(self.store.detail('casa_kiraz')['tasks'], [])
-        self.store.decide(ack['approval_id'], 'approve', self.app.execute_approved)
-        self.assertEqual(self.store.detail('casa_kiraz')['tasks'][0]['origin'], 'Guardián Ventas')
+        # Entre hermanos la tarea queda bloqueada sin entrar a aprobación.
+        before = self.store.detail('casa_kiraz')['tasks']
+        self.problem(403, self.app.assign_task, 'guardian', {'target': 'casa_kiraz', 'title': 'Promo conjunta', 'details': 'Viernes'})
+        self.assertEqual(self.store.detail('casa_kiraz')['tasks'], before)
 
     def test_forbidden_bridge_task_changes_no_destination_rows_or_queue(self):
         self.app.jobs = _Hold()
@@ -247,20 +248,12 @@ class StoreIsolationTests(Fixture):
         self.assertEqual(self.store.dms('casa_kiraz'), before_dms)
         self.assertEqual(self.app.jobs.items, before_jobs)
 
-    def test_cross_business_task_approval_expiry_and_tampering_never_deliver(self):
+    def test_cross_business_tasks_are_rejected_before_pending_approval(self):
         self.app.jobs = _Hold()
-        expired = self.app.assign_task('guardian', {'target': 'casa_kiraz', 'title': 'Tarea expirada', 'details': 'No cruzar'})
-        self.store.db.execute('UPDATE approvals SET created=? WHERE id=?', (time.time() - 901, expired['approval_id']))
-        self.store.db.commit()
-        self.problem(409, self.store.decide, expired['approval_id'], 'approve', self.app.execute_approved)
-        tampered = self.app.assign_task('guardian', {'target': 'casa_kiraz', 'title': 'Tarea original', 'details': 'Texto exacto'})
-        row = next(a for a in self.store.approvals() if a['id'] == tampered['approval_id'])
-        row['payload']['mensaje'] = 'Texto manipulado'
-        self.store.db.execute('UPDATE approvals SET payload=? WHERE id=?', (json.dumps(row['payload']), tampered['approval_id']))
-        self.store.db.commit()
-        self.problem(403, self.store.decide, tampered['approval_id'], 'approve', self.app.execute_approved)
+        self.problem(403, self.app.assign_task, 'guardian', {'target': 'casa_kiraz', 'title': 'Tarea ficticia', 'details': 'No cruzar'})
         self.assertEqual(self.store.detail('casa_kiraz')['tasks'], [])
         self.assertEqual(self.store.dms('casa_kiraz'), [])
+        self.assertEqual(self.store.approvals(), [])
         self.assertEqual(self.app.jobs.items, [])
 
     def test_message_chains_are_bounded(self):
@@ -600,6 +593,31 @@ class ApprovalAndAuthTests(Fixture):
         self.assertEqual(self.app.computer_state()['owner'], 'user')
 
 
+class LockedMacTests(Fixture):
+    def test_locked_mac_denies_every_computer_step_without_asking(self):
+        import server
+        self.app.control('guardian', 'agent', 'step')
+        with patch('server.screen_locked', return_value=True):
+            for step in ({'action': 'capture'}, {'action': 'click', 'coordinate': [1, 1]}, {'action': 'type', 'text': 'x'}, {}):
+                verdict = self.app.computer_gate('guardian', step)
+                self.assertEqual(verdict, {'allow': False, 'reason': server.LOCKED_MAC})
+            self.assertIsNone(self.app.computer_state()['pending'])
+            self.assertTrue(self.app.computer_state()['locked'])
+        self.assertFalse(self.app.computer_state()['locked'])
+
+    def test_lock_probe_only_trusts_an_explicit_yes(self):
+        import server
+        for text, expected in (('"CGSSessionScreenIsLocked"=Yes', True), ('"CGSSessionScreenIsLocked" = Yes', True),
+                               ('"CGSSessionScreenIsLocked"=No', False), ('"IOConsoleUsers" = ()', False), ('', False)):
+            server._lock_probe['time'] = 0
+            with patch('server.subprocess.run', return_value=SimpleNamespace(stdout=text)):
+                self.assertEqual(REAL_LOCK(), expected)
+        server._lock_probe['time'] = 0
+        with patch('server.subprocess.run', side_effect=OSError()):
+            self.assertFalse(REAL_LOCK())
+        server._lock_probe['time'] = 0
+
+
 class HTTPMemoryTests(Fixture):
     def request(self, method='GET', path='/api/state', data=None, headers=None, raw=None):
         handler = Handler.__new__(Handler)
@@ -641,36 +659,17 @@ class HTTPMemoryTests(Fixture):
         self.assertFalse(response['data']['authenticated'])
         self.assertIsNone(response['data']['csrf'])
 
-    def test_authenticated_relay_approval_requires_exact_decision_and_delivers_once(self):
+    def test_authenticated_relay_blocks_siblings_without_approval(self):
         self.app.jobs = _Hold()
         headers = self.session_headers()
         path = '/api/bots/guardian/relay'
         text = 'PRUEBA_FICTICIA: texto exacto Guardián → Casa Kiraz; no enviar a clientes.'
         denied = self.request('POST', path, {'target_id': 'casa_kiraz', 'text': text}, headers)
-        self.assertEqual(denied['status'], 200)
-        self.assertEqual(denied['data']['status'], 'awaiting_joe_approval')
-        denied_id = denied['data']['approval_id']
+        self.assertEqual(denied['status'], 403)
         self.assertEqual(self.store.dms('casa_kiraz'), [])
         self.assertEqual(self.app.jobs.items, [])
-        pending = next(a for a in self.store.approvals() if a['id'] == denied_id)
-        self.assertEqual(pending['payload']['mensaje'], text)
-        reject = self.request('POST', '/api/approvals/' + denied_id, {'decision': 'reject'}, headers)
-        self.assertEqual((reject['status'], reject['data']['status']), (200, 'rechazada'))
-        self.assertEqual(self.store.dms('casa_kiraz'), [])
-        allowed = self.request('POST', path, {'target_id': 'casa_kiraz', 'text': text}, headers)
-        allowed_id = allowed['data']['approval_id']
-        no_csrf = self.request('POST', '/api/approvals/' + allowed_id, {'decision': 'approve'}, {'Cookie': headers['Cookie']})
-        self.assertEqual(no_csrf['status'], 403)
-        self.assertEqual(self.store.dms('casa_kiraz'), [])
-        approved = self.request('POST', '/api/approvals/' + allowed_id, {'decision': 'approve'}, headers)
-        self.assertEqual((approved['status'], approved['data']['status']), (200, 'completa'))
-        rows = self.store.dms('casa_kiraz')
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]['body'], text)
-        self.assertEqual(len(self.app.jobs.items), 1)
-        replay = self.request('POST', '/api/approvals/' + allowed_id, {'decision': 'approve'}, headers)
-        self.assertEqual(replay['status'], 409)
-        self.assertEqual(len(self.store.dms('casa_kiraz')), 1)
+        self.assertEqual(self.store.detail('casa_kiraz')['tasks'], [])
+        self.assertEqual(self.store.approvals(), [])
 
     def test_new_private_routes_require_the_password(self):
         for path in ('/api/apps', '/api/computer/frame', '/api/audio/ficticio', '/api/bots/guardian'):

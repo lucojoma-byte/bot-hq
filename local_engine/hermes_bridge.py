@@ -171,7 +171,7 @@ def tool_definitions():
         schema('task_create', 'Crea una tarea local para este bot.', {'title': text, 'description': text}, ['title']),
         schema('task_complete', 'Marca como completa una tarea de TU lista (usa el task_id que recibiste).', {'task_id': text}, ['task_id']),
         schema('assign_task', 'Asigna una tarea a OTRO bot: aparece en su lista de tareas y se le avisa para que la trabaje. '
-               'Su respuesta te llega después como mensaje nuevo. Entre Guardián y Casa Kiraz, Joe aprueba el texto antes de entregarlo.',
+               'Su respuesta te llega después como mensaje nuevo. Guardián y Casa Kiraz están bloqueados como destinos mutuos para mensajes y tareas, sin excepción ni aprobación.',
                {'target': text, 'title': text, 'details': text}, ['target', 'title']),
         schema('drive_list', 'Lista archivos de la carpeta Drive de TU negocio (sin folder_id: carpetas raíz). No acepta carpetas de otros negocios.',
                {'folder_id': text}, []),
@@ -209,8 +209,9 @@ def message_agent_definition():
                             'dispatch ack at once (status queued + delivery_id). It never returns the reply: finish your turn; '
                             'their reply wakes you later as a new message. COMPOSE the message yourself (lead with the point and '
                             'the concrete ask). To another business send ONLY what the request needs: never paste memory, files or '
-                            'client data. Between Guardián and Casa Kiraz the ack says awaiting_joe_approval: Joe reads the exact '
-                            'text before it is delivered.'),
+                            'client data. Guardián and Casa Kiraz must never message or assign tasks to each other. The server rejects '
+                            'that route before creating an approval, message, or task. Holding may communicate with either one, but '
+                            'must not forward content between them within a conversation chain.'),
             'parameters': {'type': 'object', 'properties': props, 'required': ['target', 'message']}}
 
 

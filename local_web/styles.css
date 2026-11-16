@@ -74,3 +74,4 @@
 .step-exact .micro{overflow-wrap:anywhere;font-size:9px}
 .task-row.done .task-title{text-decoration:line-through;opacity:.6}
 .task-row .icon-btn svg{width:13px;height:13px;margin:0}
+.locked-note{margin:14px 20px 0}
