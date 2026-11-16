@@ -21,7 +21,8 @@ import uuid
 
 APP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP))
-from local_engine.core import Store, Problem, preflight, safe_path
+from local_engine.core import Store, Problem, preflight, safe_path, MAX_DM_HOPS
+from local_engine import composio_mcp
 from local_engine.composio_mcp import ComposioMCP
 from server import Application, Handler, HERMES_PYTHON
 
@@ -129,18 +130,45 @@ class StoreIsolationTests(Fixture):
         self.store.db.commit()
         self.problem(409, self.store.memory, 'guardian', {'memory': 'No actualizar'})
 
-    def test_cross_business_relay_and_holding_bridge_denied(self):
+    def test_cross_business_messages_and_holding_bridge_denied(self):
         for source, target in [('guardian', 'casa_kiraz'), ('casa_kiraz', 'guardian'), ('holding', 'guardian'), ('holding', 'casa_kiraz')]:
             with self.subTest(source=source, target=target):
-                self.problem(403, self.store.relay, source, target, 'FICTICIO')
+                self.problem(403, self.store.dm_create, source, target, 'FICTICIO')
+                # El roster del bot ni siquiera contiene al otro negocio.
+                self.problem(404, self.app.message_agent, source, {'target': target, 'body': 'FICTICIO'})
+                self.problem(404, self.app.relay, source, target, 'FICTICIO')
         self.assertEqual(self.store.detail('casa_kiraz')['messages'], [])
+        self.assertEqual(self.app.jobs, [])
 
-    def test_same_business_relay_is_honestly_labeled(self):
+    def test_same_business_message_is_queued_with_native_ack(self):
         extra = self.store.create_bot('Apoyo Guardián', 'guardian')
-        result = self.store.relay('guardian', extra['id'], 'Mensaje ficticio')
-        self.assertTrue(result['delivered'])
-        self.assertFalse(result['native'])
-        self.assertIn('Mensaje ficticio', self.store.detail(extra['id'])['messages'][0]['text'])
+        self.assertEqual(extra['handle'], 'apoyo_guardian')
+        self.assertEqual([t['id'] for t in self.store.teammates('guardian')], [extra['id']])
+        self.app.jobs = _Hold()  # la entrega real (turno Hermes) no se ejecuta en pruebas
+        ack = self.app.message_agent('guardian', {'target': '@apoyo_guardian', 'body': 'Mensaje ficticio', 'expects_reply': True})
+        self.assertEqual(ack['status'], 'queued')
+        dm = self.store.dm(ack['delivery_id'])
+        self.assertEqual((dm['from_bot'], dm['to_bot'], dm['depth'], dm['status']), ('guardian', extra['id'], 1, 'en_cola'))
+        self.assertEqual(self.app.jobs.items, [{'kind': 'deliver', 'dm': ack['delivery_id']}])
+
+    def test_message_chains_are_bounded(self):
+        extra = self.store.create_bot('Apoyo Guardián', 'guardian')
+        self.problem(409, self.store.dm_create, 'guardian', extra['id'], 'x', True, 'cadena', MAX_DM_HOPS + 1)
+        self.app.jobs = _Hold()
+        self.app.turn_context['guardian'] = {'chain': 'cadena', 'depth': 1, 'sent': 0}
+        for _ in range(8):
+            self.store.dm_create('guardian', extra['id'], 'x', True, 'cadena', 1)
+        self.problem(409, self.app.message_agent, 'guardian', {'target': 'apoyo_guardian', 'body': 'uno más'})
+
+    def test_reply_goes_back_to_sender_only_when_expected(self):
+        extra = self.store.create_bot('Apoyo Guardián', 'guardian')
+        self.app.jobs = _Hold()
+        wanted = self.store.dm_create('guardian', extra['id'], 'pregunta', True)
+        silent = self.store.dm_create('guardian', extra['id'], 'aviso', False)
+        self.app.after_turn(wanted, {'mode': 'incoming'}, 'respuesta', 'completo')
+        self.app.after_turn(silent, {'mode': 'incoming'}, 'ok', 'completo')
+        self.assertEqual(self.store.dm(wanted)['reply'], 'respuesta')
+        self.assertEqual(self.app.jobs.items, [{'kind': 'reply', 'dm': wanted}])
 
     def test_paid_profiles_and_tampered_model_rejected(self):
         for profile in ('grok', 'investigacion', 'anthropic', 'xai', 'gemini'):
@@ -205,12 +233,67 @@ class ApprovalAndAuthTests(Fixture):
         self.problem(403, self.store.decide, tampered['id'], 'approve', execute)
         self.assertEqual(calls, [])
 
-    def test_unimplemented_action_never_claims_sent(self):
-        approval = self.store.approval('guardian', 'gmail_send', {'body': 'No enviar'})
-        result = self.store.decide(approval['id'], 'approve', self.app.mcp.execute_action)
+    def test_unassigned_account_fails_closed_and_never_calls_composio(self):
+        approval = self.store.approval('guardian', 'gmail_send', {'para': ['a@example.com'], 'asunto': 'x', 'cuerpo': 'No enviar'})
+        with patch.object(self.app.mcp, 'discover', return_value=FAKE_STATUS), patch.object(self.app.mcp, 'call') as call:
+            result = self.store.decide(approval['id'], 'approve', self.app.mcp.execute_action)
         self.assertEqual(result['status'], 'fallida')
-        self.assertIn('no se envió', result['result']['error'])
+        self.assertIn('no está asignado', result['result']['error'])
+        call.assert_not_called()
         self.problem(409, self.store.decide, approval['id'], 'approve', self.app.mcp.execute_action)
+
+    def test_exclusive_account_belongs_to_one_business(self):
+        self.store.assign_account('gmail', 'gmail_ficticia', 'casa_kiraz')
+        with patch.object(self.app.mcp, 'discover', return_value=FAKE_STATUS):
+            self.assertEqual(self.app.mcp.account_for('casa_kiraz', 'gmail'), 'gmail_ficticia')
+            self.problem(403, self.app.mcp.account_for, 'guardian', 'gmail')
+            self.problem(403, self.app.mcp.account_for, 'holding', 'gmail')
+            self.problem(403, self.app.mcp.gmail_search, 'guardian', '')
+            self.store.assign_account('gmail', 'gmail_ficticia', 'ninguno')
+            self.problem(403, self.app.mcp.account_for, 'casa_kiraz', 'gmail')
+        self.problem(400, self.store.assign_account, 'googledrive', 'x_cuenta', 'guardian')
+        self.problem(400, self.store.assign_account, 'gmail', 'gmail_ficticia', 'otro_negocio')
+
+    def test_proposal_is_normalized_and_never_executes(self):
+        self.store.assign_account('gmail', 'gmail_ficticia', 'guardian')
+        with patch.object(self.app.mcp, 'discover', return_value=FAKE_STATUS), patch.object(self.app.mcp, 'call') as call:
+            made = self.app.propose('guardian', 'gmail_send', {'to': 'cliente@example.com', 'subject': 'Hola', 'body': 'Texto'})
+            self.problem(400, self.app.propose, 'guardian', 'gmail_send', {'to': 'no-es-correo', 'subject': 'Hola', 'body': 'Texto'})
+            self.problem(403, self.app.propose, 'guardian', 'wire_transfer', {})
+            self.problem(403, self.app.propose, 'casa_kiraz', 'gmail_send', {'to': 'cliente@example.com', 'subject': 'Hola', 'body': 'Texto'})
+        call.assert_not_called()
+        row = self.store.approvals('guardian')[0]
+        self.assertEqual((row['id'], row['status']), (made['approval_id'], 'pendiente'))
+        self.assertEqual(row['payload'], {'para': ['cliente@example.com'], 'cc': [], 'bcc': [], 'asunto': 'Hola', 'cuerpo': 'Texto'})
+
+    def test_approved_write_uses_only_the_business_account_once(self):
+        self.store.assign_account('gmail', 'gmail_ficticia', 'guardian')
+        sent = []
+        def call(key, arguments, timeout=90):
+            sent.append((key, arguments))
+            return {'data': {'results': [{'response': {'successful': True, 'data': {'id': 'msg1'}}}]}}, False
+        with patch.object(self.app.mcp, 'discover', return_value=FAKE_STATUS), patch.object(self.app.mcp, 'call', side_effect=call):
+            made = self.app.propose('guardian', 'gmail_send', {'to': 'cliente@example.com', 'subject': 'Hola', 'body': 'Texto'})
+            self.assertEqual(sent, [])
+            result = self.store.decide(made['approval_id'], 'approve', self.app.mcp.execute_action)
+            self.problem(409, self.store.decide, made['approval_id'], 'approve', self.app.mcp.execute_action)
+        self.assertEqual(result['status'], 'completa')
+        self.assertEqual(len(sent), 1)
+        tool = sent[0][1]['tools'][0]
+        self.assertEqual((sent[0][0], tool['tool_slug'], tool['account']), ('COMPOSIO_MULTI_EXECUTE_TOOL', 'GMAIL_SEND_EMAIL', 'gmail_ficticia'))
+        self.assertEqual(tool['arguments']['recipient_email'], 'cliente@example.com')
+
+    def test_composio_key_is_validated_and_stored_private(self):
+        self.problem(400, self.app.mcp.check_key, 'corta')
+        self.problem(400, self.app.mcp.check_key, 'con espacios y símbolos !!')
+        target = self.root / 'env-ficticio'
+        with patch.object(composio_mcp, 'ENV_FILE', target):
+            self.assertIsNone(composio_mcp.read_env_key())
+            composio_mcp.save_env_key('ck_llave_ficticia_0123456789')
+            self.assertEqual(composio_mcp.read_env_key(), 'ck_llave_ficticia_0123456789')
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            composio_mcp.save_env_key('ck_otra_llave_ficticia_987654')
+            self.assertEqual(target.read_text().count('COMPOSIO_API_KEY='), 1)
 
     def test_engine_token_bound_to_bot_and_expiration(self):
         self.store.engine_tickets['ficticio-efimero'] = {'bot_id': 'guardian', 'expires': time.time() + 30}
@@ -222,13 +305,57 @@ class ApprovalAndAuthTests(Fixture):
         self.store.engine_tickets['ficticio-efimero']['expires'] = time.time() - 1
         self.problem(403, self.app.engine_tool, 'ficticio-efimero', {'bot_id': 'guardian', 'tool': 'list_files'})
 
-    def test_taking_control_revokes_all_engine_tickets(self):
-        self.store.engine_tickets.update({'uno': {'bot_id': 'guardian', 'expires': time.time() + 30},
-                                         'dos': {'bot_id': 'casa_kiraz', 'expires': time.time() + 30}})
-        result = self.app.control('guardian', 'user')
-        self.assertEqual(self.store.engine_tickets, {})
-        self.assertFalse(result['available'])
-        self.assertEqual(result['owner'], 'user')
+    def test_computer_needs_grant_and_only_one_bot_holds_it(self):
+        deny = self.app.computer_gate('guardian', {'action': 'click', 'summary': 'clic'})
+        self.assertFalse(deny['allow'])
+        self.assertFalse(self.app.computer_gate('guardian', {'action': 'capture', 'free': True})['allow'])
+        self.problem(404, self.app.screen)
+        self.assertFalse(self.app.open_app('guardian', 'Calculator')['opened'])
+        state = self.app.control('guardian', 'agent', 'session')
+        self.assertEqual((state['owner'], state['bot_id'], state['mode']), ('agent', 'guardian', 'session'))
+        self.assertTrue(self.app.computer_gate('guardian', {'action': 'click', 'summary': 'clic'})['allow'])
+        self.assertFalse(self.app.computer_gate('casa_kiraz', {'action': 'capture', 'free': True})['allow'])
+        self.problem(409, self.app.control, 'casa_kiraz', 'agent', 'session')
+        self.problem(400, self.app.control, 'guardian', 'agent', 'modo_inventado')
+
+    def test_step_mode_waits_for_joe_and_respects_denial(self):
+        self.app.control('guardian', 'agent', 'step')
+        self.assertTrue(self.app.computer_gate('guardian', {'action': 'capture', 'free': True})['allow'])
+        for decision, expected in (('allow', True), ('deny', False)):
+            with self.subTest(decision=decision):
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(self.app.computer_gate, 'guardian', {'action': 'click', 'summary': 'clic en Enviar'})
+                    for _ in range(100):
+                        pending = self.app.computer_state()['pending']
+                        if pending:
+                            break
+                        time.sleep(0.02)
+                    self.assertEqual(pending['summary'], 'clic en Enviar')
+                    self.problem(409, self.app.computer_decide, 'otro-id', 'allow')
+                    self.app.computer_decide(pending['id'], decision)
+                    self.assertEqual(future.result(timeout=5)['allow'], expected)
+                self.assertIsNone(self.app.computer_state()['pending'])
+
+    def test_taking_control_stops_holder_and_expiry_revokes(self):
+        stopped = []
+        fake = SimpleNamespace(pid=999999, poll=lambda: None)
+        self.app.control('guardian', 'agent', 'step')
+        self.store.active_processes['guardian'] = fake
+        with ThreadPoolExecutor(max_workers=1) as pool, patch('server.os.killpg', side_effect=lambda pid, sig: stopped.append(pid)):
+            future = pool.submit(self.app.computer_gate, 'guardian', {'action': 'type', 'summary': 'escribir'})
+            for _ in range(100):
+                if self.app.computer_state()['pending']:
+                    break
+                time.sleep(0.02)
+            result = self.app.control('guardian', 'user')
+            self.assertFalse(future.result(timeout=5)['allow'])
+        self.assertEqual(stopped, [999999])
+        self.assertEqual((result['owner'], result['bot_id'], result['pending']), ('user', None, None))
+        self.assertFalse(self.app.computer_gate('guardian', {'action': 'capture', 'free': True})['allow'])
+        self.app.control('guardian', 'agent', 'session')
+        self.store.computer['expires'] = time.time() - 1
+        self.assertFalse(self.app.computer_gate('guardian', {'action': 'click'})['allow'])
+        self.assertEqual(self.app.computer_state()['owner'], 'user')
 
 
 class HTTPMemoryTests(Fixture):
@@ -271,6 +398,19 @@ class HTTPMemoryTests(Fixture):
         self.assertEqual(response['status'], 200)
         self.assertFalse(response['data']['authenticated'])
         self.assertIsNone(response['data']['csrf'])
+
+    def test_new_private_routes_require_the_password(self):
+        for path in ('/api/apps', '/api/computer/frame', '/api/audio/ficticio', '/api/bots/guardian'):
+            with self.subTest(path=path):
+                self.assertEqual(self.request(path=path)['status'], 401)
+        for path, data in (('/api/apps/key', {'key': 'ck_llave_ficticia_0123456789'}), ('/api/apps/assign', {'toolkit': 'gmail', 'scope': 'guardian'}),
+                           ('/api/computer/decide', {'id': 'x', 'decision': 'allow'}), ('/api/bots/guardian/computer', {'owner': 'agent'}),
+                           ('/api/bots/guardian/speak', {'text': 'hola'}), ('/api/voice', {'voice': 'x'})):
+            with self.subTest(path=path):
+                self.assertEqual(self.request('POST', path, data)['status'], 401)
+                self.assertEqual(self.request('POST', path, data, self.session_headers(csrf=False))['status'], 403)
+        self.assertEqual(self.store.computer['owner'], 'user')
+        self.assertEqual(self.store.account_map(), {})
 
     def test_host_origin_and_cross_site_are_rejected(self):
         for headers in ({'Host': 'evil.invalid'}, {'Host': 'localhost:8787.evil.invalid'},
@@ -328,42 +468,71 @@ class HTTPMemoryTests(Fixture):
         self.assertIn("default-src 'self'", headers['Content-Security-Policy'])
 
 
+class _Hold:
+    """Cola de entregas que solo registra: evita lanzar turnos Hermes reales en pruebas."""
+    def __init__(self): self.items = []
+    def append(self, job): self.items.append(job)
+    def remove(self, job): self.items.remove(job)
+    def __iter__(self): return iter(())
+
+
+FAKE_STATUS = {name: {'active': True, 'accounts': [{'id': name + '_ficticia', 'label': 'ficticia'}]}
+               for name in ('googledrive', 'googlesheets', 'gmail', 'googlecalendar', 'instagram', 'github')}
+
+
 class DriveScopeTests(Fixture):
     def metadata(self, key, **extra):
         return {'id': key, 'name': 'Ficticio', 'mimeType': 'text/plain', 'parents': [], **extra}
 
     def test_only_read_tool_slugs_are_available(self):
-        self.problem(403, self.app.mcp.execute_read, 'GMAIL_SEND_EMAIL', {})
-        self.problem(403, self.app.mcp.execute_read, 'GOOGLEDRIVE_DELETE_FILE', {})
+        self.problem(403, self.app.mcp.execute, 'guardian', 'GMAIL_SEND_EMAIL', {})
+        self.problem(403, self.app.mcp.execute, 'guardian', 'GOOGLEDRIVE_DELETE_FILE', {})
+        self.problem(403, self.app.mcp.execute, 'guardian', 'GOOGLEDRIVE_DELETE_FILE', {}, True)
+        self.problem(403, self.app.mcp.execute, 'guardian', 'COMPOSIO_REMOTE_BASH_TOOL', {}, True)
 
     def test_cross_business_drive_root_is_rejected(self):
         foreign = next(iter(self.app.mcp.permitted_roots('casa_kiraz')))
-        with patch.object(self.app.mcp, 'execute_read', return_value=self.metadata(foreign)):
+        with patch.object(self.app.mcp, 'execute', return_value=self.metadata(foreign)):
             self.problem(403, self.app.mcp.authorize, 'guardian', foreign)
 
     def test_child_in_own_folder_allowed_but_shortcut_denied(self):
         guardian_root = next(iter(self.app.mcp.permitted_roots('guardian')))
         leaf = 'ficticio_doc_12345'
-        def fetch(slug, arguments):
+        def fetch(bot_id, slug, arguments, write=False):
             key = arguments['fileId']
             return self.metadata(key, parents=[guardian_root] if key == leaf else [])
-        with patch.object(self.app.mcp, 'execute_read', side_effect=fetch):
+        with patch.object(self.app.mcp, 'execute', side_effect=fetch):
             self.assertEqual(self.app.mcp.authorize('guardian', leaf)['id'], leaf)
-        with patch.object(self.app.mcp, 'execute_read', return_value=self.metadata(leaf, parents=[guardian_root], mimeType='application/vnd.google-apps.shortcut')):
+        with patch.object(self.app.mcp, 'execute', return_value=self.metadata(leaf, parents=[guardian_root], mimeType='application/vnd.google-apps.shortcut')):
             self.problem(403, self.app.mcp.authorize, 'guardian', leaf)
 
     def test_parent_cycles_and_invalid_ids_rejected(self):
         leaf = 'ficticio_cycle_123'
-        with patch.object(self.app.mcp, 'execute_read', return_value=self.metadata(leaf, parents=[leaf])):
+        with patch.object(self.app.mcp, 'execute', return_value=self.metadata(leaf, parents=[leaf])):
             self.problem(403, self.app.mcp.authorize, 'guardian', leaf)
         self.problem(403, self.app.mcp.authorize, 'guardian', '../../invalid')
+
+    def test_delete_and_append_are_fenced_to_the_business_folder(self):
+        guardian_root = next(iter(self.app.mcp.permitted_roots('guardian')))
+        leaf = 'ficticio_doc_12345'
+        def fetch(bot_id, slug, arguments, write=False):
+            self.assertFalse(write)
+            key = arguments['fileId']
+            return self.metadata(key, parents=[guardian_root] if key == leaf else [], mimeType='application/vnd.google-apps.spreadsheet')
+        with patch.object(self.app.mcp, 'execute', side_effect=fetch):
+            ok = self.app.mcp.validate_action('guardian', 'drive_delete', {'file_id': leaf})
+            self.assertEqual(ok['file_id'], leaf)
+            self.problem(403, self.app.mcp.validate_action, 'casa_kiraz', 'drive_delete', {'file_id': leaf})
+            self.problem(403, self.app.mcp.validate_action, 'guardian', 'drive_delete', {'file_id': guardian_root})
+            self.problem(403, self.app.mcp.validate_action, 'casa_kiraz', 'sheets_append', {'spreadsheet_id': leaf, 'rango': 'A1', 'filas': [['x']]})
+            self.problem(400, self.app.mcp.validate_action, 'guardian', 'sheets_append', {'spreadsheet_id': leaf, 'rango': 'A1', 'filas': 'no-lista'})
 
     def test_listing_discards_foreign_parents_and_shortcuts(self):
         guardian_root = next(iter(self.app.mcp.permitted_roots('guardian')))
         rows = [self.metadata('ficticio_good_123', parents=[guardian_root]),
                 self.metadata('ficticio_wrong_123', parents=['otra_unidad']),
                 self.metadata('ficticio_shortcut_123', parents=[guardian_root], mimeType='application/vnd.google-apps.shortcut')]
-        with patch.object(self.app.mcp, 'execute_read', return_value={'files': rows}):
+        with patch.object(self.app.mcp, 'execute', return_value={'files': rows}):
             result = self.app.mcp.list('guardian')
         self.assertEqual([r['id'] for r in result['files']], ['ficticio_good_123'])
 

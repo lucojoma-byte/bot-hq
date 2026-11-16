@@ -368,16 +368,6 @@ No hay terminal libre. La computadora solo se usa cuando Joe te la presta. No so
             self.db.execute('UPDATE bots SET generation=? WHERE id=?',(uuid.uuid4().hex,bot_id));self.db.commit()
         return self.detail(bot_id)
 
-    def relay(self,source,target,text):
-        a,b=self.bot(source),self.bot(target)
-        if source==target:raise Problem('Elige otro bot.')
-        # Holding tampoco es un puente automático entre datos de negocios.
-        if a['scope']!=b['scope']:raise Problem('Aislamiento: mensajes entre unidades de negocio bloqueados.',403)
-        text=short_text(text,4000)
-        self.add_message(target,'user',f"Mensaje explícito de {a['name']}: {text}")
-        self.add_message(source,'system',f"Mensaje entregado a {b['name']}. Transporte JOE HQ; comunicación nativa Hermes pendiente.")
-        return {'delivered':True,'native':False}
-
     def approval(self,bot_id,action,payload):
         self.bot(bot_id)
         if action not in APPROVAL_ACTIONS:
