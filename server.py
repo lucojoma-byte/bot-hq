@@ -765,6 +765,7 @@ class Handler(BaseHTTPRequestHandler):
                 log.info('apps: %s asignada a %s', data.get('toolkit'), data.get('scope'))
                 return self.reply(200, app.mcp.status())
             if path == '/api/apps/key':
+                app.mcp.check_key(data.get('key'))  # se valida contra Composio antes de escribir .env
                 kind = save_env_key(data.get('key'))
                 app.mcp.session_id, app.mcp.tool_names, app.mcp.cache = None, {}, None
                 status = app.mcp.status(force=True)

@@ -172,6 +172,25 @@ class ComposioMCP:
                           'Para no depender de eso, guarda tu llave de Composio en la pestaña Apps.', 503)
         return 'oauth-hermes', {'Authorization': 'Bearer ' + token}
 
+    def check_key(self, value):
+        """Prueba una llave contra Composio ANTES de guardarla. Si no sirve, no se escribe nada en .env."""
+        if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_\-]{12,200}', value.strip()):
+            raise Problem('La llave no tiene un formato válido. Copia la llave completa, sin espacios.')
+        body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                           'params': {'protocolVersion': PROTOCOL, 'capabilities': {}, 'clientInfo': {'name': 'joe-hq', 'version': '0.2.0'}}}).encode()
+        headers = {'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream',
+                   'MCP-Protocol-Version': PROTOCOL, 'x-consumer-api-key': value.strip()}
+        try:
+            with self.opener.open(urllib.request.Request(ENDPOINT, data=body, headers=headers, method='POST'), timeout=30) as response:
+                response.read(100000)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                raise Problem('Composio no aceptó esa llave, así que NO se guardó. Debe ser la llave de consumidor de '
+                              'Composio Connect (empieza con ck_), no la llave de proyecto (ak_).', 400)
+            raise Problem(f'Composio respondió HTTP {exc.code} al probar la llave; no se guardó.', 502)
+        except (OSError, ValueError):
+            raise Problem('No se pudo contactar a Composio para probar la llave; no se guardó. Revisa internet.', 503)
+
     def auth_mode(self):
         if read_env_key():
             return 'Llave propia en .env'
