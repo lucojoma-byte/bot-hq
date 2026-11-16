@@ -212,7 +212,7 @@ def register_callbacks(request):
     from toolsets import create_custom_toolset
     definitions = tool_definitions() + [message_agent_definition()]
     create_custom_toolset('joe_hq', 'Herramientas aisladas de JOE HQ',
-                          tools=[definition['name'] for definition in definitions])
+                          tools=[definition['name'] for definition in definitions] + ['open_app'])
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             return None
@@ -313,6 +313,15 @@ def enable_computer(callback):
                       handler=guarded, check_fn=cu.check_computer_use_requirements, override=True)
     TOOL_NAMES.add('computer_use')
 
+    # cua-driver no lanza apps cerradas (y Spotlight no recibe teclas en segundo plano):
+    # abrir una app instalada es una acción aparte, con la misma compuerta de Joe.
+    open_app = schema('open_app', 'Abre (o trae al frente) una app instalada en esta Mac por su nombre, p. ej. "Calculator", '
+                      '"TextEdit", "Google Chrome". Úsala antes de computer_use cuando la app no está abierta.',
+                      {'name': {'type': 'string'}}, ['name'])
+    registry.register(name='open_app', toolset='joe_hq', schema=open_app, check_fn=lambda: True, override=True,
+                      handler=lambda args, **kw: json.dumps(callback('open_app', args or {}, timeout=200), ensure_ascii=False))
+    TOOL_NAMES.add('open_app')
+
 
 def install_dispatch_gate():
     """Deny hallucinated tool calls too, before Hermes executes any handler."""
@@ -352,7 +361,8 @@ def build_instruction(context, computer):
         lines.append('ESTE TURNO es la respuesta de un compañero a un mensaje tuyo. Continúa la tarea original y resume '
                      'el resultado para Joe.')
     if computer:
-        lines.append('Joe te prestó la computadora (computer_use). Empieza con capture para ver la pantalla. Trabaja solo en '
+        lines.append('Joe te prestó la computadora (computer_use + open_app). Si la app que necesitas no está abierta, usa '
+                     'open_app primero; luego capture(app=...) para ver sus elementos y actúa por índice de elemento. Trabaja solo en '
                      'la tarea pedida. PROHIBIDO con la computadora: pulsar Enviar/Publicar/Eliminar/Pagar/Comprar, aceptar '
                      'diálogos de esas acciones, abrir datos de otro negocio o escribir contraseñas. Si la tarea requiere uno '
                      'de esos pasos, déjalo listo y pide a Joe que lo haga o usa request_action. Si una acción es denegada, '
@@ -452,6 +462,15 @@ def run(request):
 
 def main():
     logging.disable(logging.CRITICAL)
+    # El canal de protocolo es el stdout ORIGINAL. Todo lo demás (Hermes, cua-driver y otros
+    # procesos hijos) escribe a /dev/null con descriptores reales: los hijos necesitan fileno()
+    # y nada de lo que impriman debe mezclarse con la respuesta JSON ni llegar a logs.
+    protocol = os.fdopen(os.dup(1), 'w', encoding='utf-8')
+    null = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(null, 1)
+    os.dup2(null, 2)
+    sys.stdout = os.fdopen(1, 'w', encoding='utf-8', closefd=False)
+    sys.stderr = os.fdopen(2, 'w', encoding='utf-8', closefd=False)
     request = {}
     try:
         raw = sys.stdin.buffer.read(MAX_INPUT + 1)
@@ -460,16 +479,14 @@ def main():
         request = json.loads(raw)
         if not isinstance(request, dict):
             raise BridgeError('La solicitud debe ser un objeto JSON.')
-        # Hermes has console output intended for its CLI. Keep the protocol clean,
-        # suppressing library errors so OAuth data never reaches process logs.
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            result = run(request)
+        result = run(request)
     except BridgeError as exc:
         result = {'ok': False, 'response': '', 'history': [], 'error': str(exc)}
     except Exception as exc:
         result = {'ok': False, 'response': '', 'history': [],
                   'error': f'No se pudo iniciar el motor Hermes ({type(exc).__name__}).'}
-    print(json.dumps(result, ensure_ascii=False))
+    protocol.write(json.dumps(result, ensure_ascii=False) + '\n')
+    protocol.flush()
     return 0 if result.get('ok') else 1
 
 

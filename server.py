@@ -418,6 +418,8 @@ class Application:
             return self.computer_gate(bot_id, args)
         if name == 'computer_event':
             return self.computer_event(bot_id, args)
+        if name == 'open_app':
+            return self.open_app(bot_id, args.get('name'))
         if name == 'save_file':
             return self.store.save_file(bot_id, args.get('path'), args.get('content'))
         if name == 'list_files':
@@ -513,6 +515,28 @@ class Application:
         if pending['decision'] == 'allow' and self.computer_granted(bot_id):
             return {'allow': True}
         return {'allow': False, 'reason': 'Joe rechazó este paso.' if pending['decision'] == 'deny' else 'Joe no respondió a tiempo; paso cancelado.'}
+
+    def open_app(self, bot_id, name):
+        """Abre una app instalada. Misma compuerta que cualquier acción de computadora."""
+        if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ .+&_-]{1,60}', name.strip()):
+            raise Problem('Nombre de app inválido.')
+        name = name.strip()
+        verdict = self.computer_gate(bot_id, {'action': 'open_app', 'summary': f'abrir la app «{name}»'})
+        if not verdict.get('allow'):
+            return {'opened': False, 'reason': verdict.get('reason')}
+        folders = [Path('/Applications'), Path('/System/Applications'), Path('/System/Applications/Utilities'), Path('/Applications/Utilities')]
+        bundle = next((f / (name + '.app') for f in folders if (f / (name + '.app')).is_dir()), None)
+        target = ['/usr/bin/open', str(bundle)] if bundle else ['/usr/bin/open', '-a', name]
+        try:
+            done = subprocess.run(target, timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            done = None
+        ok = bool(done and done.returncode == 0)
+        self.computer_event(bot_id, {'action': 'open_app', 'summary': f'abrir la app «{name}»', 'ok': ok})
+        if not ok:
+            return {'opened': False, 'reason': 'macOS no encontró esa app. Usa el nombre exacto que muestra list_apps (suele ser en inglés).'}
+        time.sleep(1.5)
+        return {'opened': True, 'app': name, 'next': "Usa computer_use capture con app='%s' para ver sus elementos." % name}
 
     def computer_decide(self, ident, decision):
         if decision not in ('allow', 'deny'):
