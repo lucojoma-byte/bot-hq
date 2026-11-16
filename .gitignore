@@ -1,0 +1,18 @@
+.env
+.env.*
+!.env.example
+node_modules/
+__pycache__/
+*.pyc
+.test-runtime/
+.preview-runtime/
+*.sqlite*
+*.db*
+artifacts/private/
+.DS_Store
+# Configuración privada y material de estudio de terceros (no se publica)
+drive-folders.json
+connections.json
+references/
+.venv*/
+*.log

@@ -1,0 +1,11 @@
+{
+  "name": "joe-hq",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Adaptación local de Bot HQ para Hermes Codex",
+  "scripts": {
+    "start": "bash iniciar.sh",
+    "test": "python3 -B -m unittest discover -s tests -v",
+    "doctor": "python3 -B server.py --doctor"
+  }
+}
