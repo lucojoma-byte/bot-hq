@@ -16,6 +16,8 @@ import time
 import uuid
 
 ROOT = Path('/Volumes/JOE_HQ')
+# Ensayo (staging): datos de prueba dentro del mismo volumen; nunca toca producción.
+STAGING_ROOT = ROOT / 'cache' / 'staging'
 SCOPES = {
     'guardian': ['02_GUARDIAN_ACCESOS_CNC'],
     'casa_kiraz': ['03_CASA_KIRAZ'],
@@ -26,6 +28,28 @@ PROFILES = [
     {'id': 'codex_sol', 'name': 'ChatGPT Pro · Codex Sol', 'model': 'gpt-5.6-sol'},
 ]
 MODEL_ALLOWLIST = {p['model'] for p in PROFILES}
+
+# Toda escritura externa pasa por aprobación de Joe en la UI. Sin excepción.
+APPROVAL_ACTIONS = {
+    'gmail_send': 'Enviar correo',
+    'gmail_draft': 'Crear borrador de correo',
+    'calendar_create': 'Crear evento de calendario',
+    'instagram_publish': 'Publicar en Instagram',
+    'drive_delete': 'Enviar archivo de Drive a la papelera',
+    'sheets_append': 'Agregar filas a una hoja',
+    'github_issue': 'Crear issue en GitHub',
+}
+# Apps cuya cuenta se asigna a UN solo negocio (regla de hierro: no se mezclan).
+EXCLUSIVE_TOOLKITS = ('gmail', 'googlecalendar', 'instagram', 'github')
+# Drive/Sheets comparten cuenta pero quedan cercados por carpeta raíz de cada negocio.
+FOLDER_TOOLKITS = ('googledrive', 'googlesheets')
+MAX_DM_HOPS = 3
+
+def slug(value):
+    import unicodedata
+    text = unicodedata.normalize('NFKD', str(value)).encode('ascii', 'ignore').decode().lower()
+    text = re.sub(r'[^a-z0-9]+', '_', text).strip('_')
+    return text[:40] or 'bot'
 
 class Problem(Exception):
     def __init__(self, message, status=400):
@@ -68,7 +92,7 @@ def atomic_write(path: Path, content: str):
     os.replace(temp, path)
 
 def cache_environment(root=ROOT):
-    c = root / 'cache'
+    c = ROOT / 'cache'
     return {
         'npm_config_cache': str(c/'npm'), 'PNPM_HOME': str(c/'pnpm-bin'),
         'npm_config_store_dir': str(c/'pnpm'), 'PIP_CACHE_DIR': str(c/'pip'),
@@ -78,13 +102,16 @@ def cache_environment(root=ROOT):
         'TORCH_HOME': str(c/'torch'), 'TMPDIR': str(c/'tmp'),
         'PYTHONDONTWRITEBYTECODE': '1', 'HF_HUB_OFFLINE': '1',
         'TRANSFORMERS_OFFLINE': '1', 'UV_NO_CACHE': '0',
-        'PIP_CONFIG_FILE': str(root/'app/pip.conf'),
+        'PIP_CONFIG_FILE': str(ROOT/'app/pip.conf'),
     }
 
 def preflight(root=ROOT, require_mount=True):
-    if require_mount and (root != ROOT or not root.is_mount()):
+    if require_mount and (root not in (ROOT, STAGING_ROOT) or not ROOT.is_mount()):
         raise Problem('JOE_HQ no está montado en /Volumes/JOE_HQ. Conecta el volumen y vuelve a iniciar.', 503)
-    for folder in ['app', 'data', 'cache', 'logs', 'backups', 'memoria/guardian', 'memoria/casa_kiraz', 'memoria/holding']:
+    folders = ['data', 'cache', 'logs', 'backups', 'memoria/guardian', 'memoria/casa_kiraz', 'memoria/holding']
+    if root == ROOT:
+        folders.insert(0, 'app')
+    for folder in folders:
         target = root/folder
         if target.is_symlink() or not target.resolve().is_relative_to(root.resolve()):
             raise Problem('El almacenamiento debe permanecer dentro de JOE_HQ: '+folder, 503)
@@ -99,7 +126,7 @@ def preflight(root=ROOT, require_mount=True):
             raise Problem('Sin permiso de escritura en '+str(target)+'. Ejecuta desde Terminal con acceso al volumen.', 503)
     for name in ['npm', 'pnpm', 'pip', 'uv', 'uv-python', 'playwright', 'xdg', 'huggingface', 'torch', 'tmp']:
         try:
-            (root/'cache'/name).mkdir(parents=True, exist_ok=True, mode=0o700)
+            (ROOT/'cache'/name).mkdir(parents=True, exist_ok=True, mode=0o700)
         except OSError:
             raise Problem('No se puede escribir la caché en JOE_HQ. No se usará el disco interno.', 503)
 
@@ -120,11 +147,19 @@ class Store:
         CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY,bot_id TEXT NOT NULL REFERENCES bots(id),title TEXT NOT NULL,status TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY,bot_id TEXT NOT NULL REFERENCES bots(id),action TEXT NOT NULL,payload TEXT NOT NULL,digest TEXT NOT NULL,status TEXT NOT NULL,created REAL NOT NULL,result TEXT);
         CREATE TABLE IF NOT EXISTS drive_roots(scope TEXT NOT NULL,name TEXT NOT NULL,file_id TEXT NOT NULL,PRIMARY KEY(scope,name));
+        CREATE TABLE IF NOT EXISTS dms(id TEXT PRIMARY KEY,chain TEXT NOT NULL,depth INTEGER NOT NULL,from_bot TEXT NOT NULL,to_bot TEXT NOT NULL,body TEXT NOT NULL,expects_reply INTEGER NOT NULL,status TEXT NOT NULL,reply TEXT,created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS accounts(toolkit TEXT PRIMARY KEY,account_id TEXT NOT NULL,scope TEXT NOT NULL,label TEXT NOT NULL DEFAULT '');
         ''')
+        columns={row[1] for row in self.db.execute('PRAGMA table_info(bots)')}
+        if 'handle' not in columns:
+            self.db.execute('ALTER TABLE bots ADD COLUMN handle TEXT')
+            for row in self.db.execute('SELECT id,name FROM bots ORDER BY rowid').fetchall():
+                self.db.execute('UPDATE bots SET handle=? WHERE id=?',(self._free_handle(row[0] if not row[0].startswith('bot_') else row[1]),row[0]))
         self.db.commit()
         self.sessions = {}
-        self.computer = {'owner': 'user', 'bot_id': None, 'available': False,
-                         'reason': 'Control del escritorio y pantallas independientes pendientes de integración macOS.'}
+        # Computadora: una sola pantalla física. Joe la presta a UN bot, por tiempo limitado.
+        self.computer = {'owner': 'user', 'bot_id': None, 'mode': 'step', 'expires': 0,
+                         'events': [], 'pending': None, 'frame_seq': 0}
         self.bot_locks = {}
         self.active_processes = {}
         self.engine_tickets = {}
@@ -136,7 +171,68 @@ class Store:
         self.db.execute("UPDATE bots SET status='listo'")
         self.db.execute("UPDATE approvals SET status='interrumpida',result='Verificar destino manualmente; no se reintentará.' WHERE status='ejecutando'")
         self.db.execute("UPDATE messages SET status='interrumpido' WHERE status='pensando'")
+        self.db.execute("UPDATE dms SET status='interrumpido' WHERE status IN ('en_cola','entregando','respondiendo')")
         self.db.commit()
+
+    def _free_handle(self, base):
+        base = slug(base); candidate = base; n = 2
+        while self.db.execute('SELECT 1 FROM bots WHERE handle=?', (candidate,)).fetchone():
+            candidate = f'{base[:36]}_{n}'; n += 1
+        return candidate
+
+    def teammates(self, bot_id):
+        """Roster nativo: SOLO bots del mismo negocio. Otro negocio no existe para el bot."""
+        me = self.bot(bot_id)
+        return [b for b in self.bots() if b['scope'] == me['scope'] and b['id'] != bot_id]
+
+    def resolve_teammate(self, bot_id, target):
+        target = str(target or '').strip().lstrip('@').lower()
+        for b in self.teammates(bot_id):
+            if target in (b['handle'], b['id'], slug(b['name'])):
+                return b
+        names = ', '.join('@' + b['handle'] for b in self.teammates(bot_id)) or 'ninguno'
+        raise Problem(f'No existe ese compañero en tu negocio. Compañeros disponibles: {names}.', 404)
+
+    def dm_create(self, from_bot, to_bot, body, expects_reply=True, chain=None, depth=1):
+        a, b = self.bot(from_bot), self.bot(to_bot)
+        if a['scope'] != b['scope'] or from_bot == to_bot:
+            raise Problem('Aislamiento: mensajes entre unidades de negocio bloqueados.', 403)
+        if depth > MAX_DM_HOPS:
+            raise Problem(f'Cadena de mensajes demasiado larga (máximo {MAX_DM_HOPS} saltos). Resume y responde a Joe.', 409)
+        body = short_text(body, 16000)
+        ident = uuid.uuid4().hex[:12]
+        with self.lock:
+            self.db.execute('INSERT INTO dms VALUES(?,?,?,?,?,?,?,?,?,?)',
+                            (ident, chain or ident, depth, from_bot, to_bot, body, 1 if expects_reply else 0, 'en_cola', None, time.time()))
+            self.db.commit()
+        return ident
+
+    def dm_update(self, ident, status, reply=None):
+        with self.lock:
+            self.db.execute('UPDATE dms SET status=?,reply=COALESCE(?,reply) WHERE id=?', (status, reply, ident)); self.db.commit()
+
+    def dm(self, ident):
+        with self.lock:
+            row = self.db.execute('SELECT * FROM dms WHERE id=?', (ident,)).fetchone()
+            return dict(row) if row else None
+
+    def dms(self, bot_id, limit=30):
+        with self.lock:
+            return [dict(x) for x in self.db.execute('SELECT * FROM dms WHERE from_bot=? OR to_bot=? ORDER BY created DESC LIMIT ?', (bot_id, bot_id, limit))]
+
+    def account_map(self):
+        with self.lock:
+            return {r['toolkit']: dict(r) for r in self.db.execute('SELECT * FROM accounts')}
+
+    def assign_account(self, toolkit, account_id, scope, label=''):
+        if toolkit not in EXCLUSIVE_TOOLKITS: raise Problem('Esta app no se asigna por negocio.')
+        if scope not in SCOPES and scope != 'ninguno': raise Problem('Unidad de negocio inválida.')
+        if not isinstance(account_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{3,80}', account_id): raise Problem('Cuenta inválida.')
+        with self.lock:
+            if scope == 'ninguno': self.db.execute('DELETE FROM accounts WHERE toolkit=?', (toolkit,))
+            else: self.db.execute('INSERT OR REPLACE INTO accounts VALUES(?,?,?,?)', (toolkit, account_id, scope, str(label)[:120]))
+            self.db.commit()
+        return self.account_map()
 
     def setting(self, key, value=None):
         with self.lock:
@@ -173,8 +269,9 @@ class Store:
         if scope not in SCOPES:raise Problem('Unidad de negocio inválida.')
         with self.lock:
             if len(self.bots())>=5:raise Problem('Máximo cinco bots. Crea un hilo en un bot existente.',409)
+            fresh=bot_id is None
             bot_id=bot_id or 'bot_'+secrets.token_hex(6)
-            self.db.execute('INSERT INTO bots VALUES(?,?,?,?,?,?,?)',(bot_id,name,scope,'codex',PROFILES[0]['model'],'listo',uuid.uuid4().hex))
+            self.db.execute('INSERT INTO bots(id,name,scope,profile,model,status,generation,handle) VALUES(?,?,?,?,?,?,?,?)',(bot_id,name,scope,'codex',PROFILES[0]['model'],'listo',uuid.uuid4().hex,self._free_handle(name if fresh else bot_id)))
             try:
                 home=self.home(bot_id)
                 for p in [home/'memories',self.workspace(bot_id)]:p.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -184,7 +281,7 @@ Responde en español con mensajes breves y digeribles. Distingue datos de supues
 No transfieras memoria, archivos ni conexiones entre Guardián y Casa Kiraz.
 No inventes precios, márgenes, plazos ni éxitos de herramientas.
 Solo puedes usar herramientas controladas por JOE HQ. Acciones externas requieren aprobación de Joe.
-No hay herramientas de terminal ni navegador libre. No solicites proveedores de API de pago.
+No hay terminal libre. La computadora solo se usa cuando Joe te la presta. No solicites proveedores de API de pago.
 '''
                 if scope=='guardian':soul+='No-List: cero proyectos sin anticipo; cero diagnósticos gratis; cero herrería informal de tubo delgado. Margen neto objetivo 25%-30% debe comprobarse con costos, nunca suponerse.\n'
                 for path,content in [('SOUL.md',soul),('memories/MEMORY.md',''),('memories/USER.md','Joe gobierna y toma las decisiones.\n')]:
@@ -230,7 +327,8 @@ No hay herramientas de terminal ni navegador libre. No solicites proveedores de 
                         p=safe_path(base,str(p.relative_to(base)))
                         files.append({'name':str(p.relative_to(base)),'size':p.stat().st_size})
                     except Problem:pass
-        return {'bot':b,'messages':messages[-500:],'tasks':tasks,'files':files,'memory':self.memory(bot_id),'approvals':self.approvals(bot_id),'drive':[]}
+        team=[{'id':t['id'],'name':t['name'],'handle':t['handle']} for t in self.teammates(bot_id)]
+        return {'bot':b,'messages':messages[-500:],'tasks':tasks,'files':files,'memory':self.memory(bot_id),'approvals':self.approvals(bot_id),'drive':[],'team':team,'dms':self.dms(bot_id)}
 
     def save_file(self,bot_id,name,content):
         short_text(name,200);short_text(content,500000,True)
@@ -282,7 +380,7 @@ No hay herramientas de terminal ni navegador libre. No solicites proveedores de 
 
     def approval(self,bot_id,action,payload):
         self.bot(bot_id)
-        if action not in {'gmail_send','calendar_create','instagram_publish','drive_delete'}:
+        if action not in APPROVAL_ACTIONS:
             raise Problem('Acción no permitida.',403)
         if not isinstance(payload,dict):raise Problem('Carga inválida.')
         raw=json.dumps(payload,sort_keys=True,ensure_ascii=False,separators=(',',':'))
@@ -296,7 +394,12 @@ No hay herramientas de terminal ni navegador libre. No solicites proveedores de 
         with self.lock:
             query='SELECT * FROM approvals'+(' WHERE bot_id=?' if bot_id else '')+' ORDER BY created DESC LIMIT 100'
             rows=[dict(x) for x in self.db.execute(query,(bot_id,) if bot_id else ())]
-            for row in rows:row['payload']=json.loads(row['payload'])
+            for row in rows:
+                row['payload']=json.loads(row['payload'])
+                row['title']=APPROVAL_ACTIONS.get(row['action'],row['action'])
+                if row.get('result'):
+                    try:row['result']=json.loads(row['result'])
+                    except (ValueError,TypeError):pass
             return rows
 
     def decide(self,ident,decision,execute):
