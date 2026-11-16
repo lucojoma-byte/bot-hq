@@ -1,103 +1,160 @@
-# JOE HQ — Reporte final v1.0
+# JOE HQ — Reporte final v1.1
 
-Fecha: 15 de noviembre de 2026. Director: José María. Ubicación: `/Volumes/JOE_HQ/app`.
+Fecha: 15 de noviembre de 2026. Director: José María. Ubicación: `/Volumes/JOE_HQ/app`. Versión de la app: 0.2.0.
+Continúa el avance parcial anterior (Codex). Este reporte sustituye al v1.0.
 
 ## Dictamen
 
-**La entrega es parcial. La app no quedó corriendo en localhost y no está lista para operación completa.** Hay código, interfaz, adaptadores locales y 37 pruebas aprobadas; el entorno de esta sesión bloquea escribir fuera de `app/`, abrir puertos locales y resolver los servicios de modelos desde la terminal. Además quedan funciones que requieren implementación adicional, detalladas abajo.
+**La app corre en `http://127.0.0.1:8787`, pide contraseña y los bots responden con Hermes.** Los cinco requisitos pendientes quedaron construidos y probados con ejecuciones reales en una instancia de ensayo (puerto 8788, datos de prueba dentro del mismo disco).
 
-No se usaron APIs de modelos de pago, Orgo ni xAI. No se cambió la configuración global de Hermes. No se envió ningún correo, evento, publicación o mensaje a clientes ni se eliminó ningún archivo. No fue necesario pedir COMPOSIO_API_KEY: existe OAuth para `composio-lucojoma`, leído solamente en memoria.
+Tres límites que debes conocer antes de dar la obra por cerrada:
 
-## Entregables locales
+1. **No probé un chat en producción después del reinicio.** No tengo tu contraseña y no la pedí. Producción y ensayo usan el mismo código; lo que cambia son los datos.
+2. **Ninguna escritura externa se ejecutó de verdad.** No se envió correo, no se creó evento, no se publicó ni se borró nada. Probé proponer y rechazar; aprobar es tu botón.
+3. **Faltan dos acciones tuyas:** pegar la llave de Composio y asignar cada cuenta a un negocio (pestaña Apps).
 
-- `PLAN.md`: plan escrito antes de implementar y resultado de ejecución.
-- `README.md`: instrucciones en español y arranque de un comando.
-- `server.py` y `local_engine/`: persistencia, autenticación, límites por negocio, puente Hermes, cliente MCP y transcripción.
-- `local_web/`: interfaz de mensajes, panel por bot, memoria editable, tareas, archivos, modelos, Drive, voz y aprobaciones.
-- `tests/test_core.py`: 37 pruebas de lógica, concurrencia y seguridad, sin cuentas reales ni sockets.
-- `FASE_2_IMESSAGE.md`: módulo definido y apagado.
-- `artifacts/captura-vista-estatica.png`: captura real de Chrome mostrando la vista estática rotulada.
-- `artifacts/vista_estatica.html`: revisión visual sin servidor, sin scripts, sin conversaciones inventadas y con controles deshabilitados.
-- `artifacts/source-manifest.json` y `artifacts/upstream.json`: procedencia y hashes de fuentes.
-- `.test-runtime/`: evidencia local y fixtures conservados, excluidos de Git.
+No se usó ninguna API de modelos de pago. No se modificó `~/.hermes`.
 
-## Qué funciona y qué se comprobó
+## Los 4 hallazgos de la auditoría anterior
 
-| Capacidad | Resultado y límite de la evidencia |
+| # | Hallazgo | Resultado | Evidencia |
+|---|---|---|---|
+| 1 | Fork sin commits | **Corregido.** 20 commits de la adaptación en `lucojoma-byte/bot-hq`, rama `joe-hq`. | `git log`; GitHub compara `main...joe-hq`. |
+| 2 | MCP de Composio "falló por DNS" | **Corregido.** No era DNS: el sandbox de la sesión anterior bloqueaba toda la red. En esta Mac resuelve y conecta. | Lecturas reales de las 6 apps. |
+| 3 | VibeVoice no corre | **Corregido.** Faltaba un Python con `torch` y `vibevoice` (el de Hermes no los trae) y el tokenizador se buscaba en internet. | Audio generado y dictado de vuelta. |
+| 4 | Pide contraseña en incógnito | **Se mantiene.** Toda la API responde 401 sin sesión, incluidas las rutas nuevas. | Captura 01; pruebas HTTP. |
+
+Notas de cada uno:
+
+- **Hallazgo 1.** Dejé `joe-hq` como rama principal del fork para que veas los commits al abrirlo; `main` sigue idéntica al original. El fork es **público**: `drive-folders.json`, `.env` y `references/` quedaron fuera de Git.
+- **Hallazgo 2, segunda causa.** La sesión OAuth de Composio que usa Hermes dura 1 hora y solo se renueva con Hermes abierto. Venció a media prueba (18:04) y lo vi fallar. Por eso la app acepta tu llave de consumidor `ck_…`, que no caduca así.
+- **Hallazgo 3.** En precisión completa el modelo ocupa unos 11 GB y satura los 16 GB de esta Mac (más de 7 minutos sin terminar una frase). Corre en media precisión: 6.4 GB.
+
+## Requisitos pendientes: qué funciona de verdad
+
+### 1. App viva y bots respondiendo con Hermes
+
+- Proceso escuchando en `127.0.0.1:8787`; página 200; API 401 sin contraseña.
+- Tus 3 bots y 4 mensajes previos se conservaron. Respaldo: `backups/joe-hq-antes-0.2.sqlite3`.
+- Ensayo: respuestas de Hermes en 7 a 15 segundos; el bot escribió su memoria nativa (`memories/MEMORY.md`).
+- **Defecto heredado corregido:** las herramientas de los bots devolvían un objeto y Hermes exige texto. Ninguna herramienta (archivos, tareas, Drive, aprobaciones) funcionaba en la versión anterior.
+
+### 2. Composio desde la propia app
+
+| App | Lectura real probada | Escritura (solo con tu botón) |
+|---|---|---|
+| Drive / Docs | Listar carpetas de cada negocio. Lectura de un Google Doc: programada, sin prueba real | Enviar a papelera |
+| Sheets | Hoja leída como CSV (1,727 caracteres); lectura por rango programada, sin prueba real | Agregar filas |
+| Gmail | Búsqueda: 3 correos | Enviar, crear borrador |
+| Calendar | Lista de eventos: 0 próximos | Crear evento |
+| Instagram | Perfil | Publicar imagen |
+| GitHub | 9 repositorios | Crear issue |
+
+- **Aislamiento probado:** el bot de Guardián no pudo listar la carpeta de Casa Kiraz ni leer un documento ajeno; el de Casa Kiraz no pudo leer uno de Guardián.
+- **Cuentas exclusivas:** Gmail, Calendar, Instagram y GitHub pertenecen a un solo negocio. Sin asignar, nadie las usa. Con Gmail asignado a Holding, Guardián quedó bloqueado.
+- Los bots usaron los conectores por sí mismos dentro del chat (contaron archivos, correos y repos).
+- Los bots no reciben la herramienta genérica de Composio ni acceso HTTP: solo funciones cerradas.
+
+### 3. Comunicación nativa entre bots de Hermes
+
+- Los bots usan `message_agent`, la herramienta de Bot Mode de Hermes, con su contrato, su sobre ("Constraints", "Reply needed") y su vía de despacho nativa.
+- **Prueba real:** Guardián Ventas preguntó a Guardián Cotizaciones un dato que solo ese bot conocía (COT-7741). Cotizaciones contestó y la respuesta despertó sola a Ventas, que te lo reportó. Capturas 02 y 03.
+- Hacia Casa Kiraz: bloqueado. Para el bot de Guardián ese compañero no existe.
+- Límites: 3 saltos y 8 mensajes por conversación entre bots.
+- **Lo que no es nativo:** el transporte. El de Hermes lanza `hermes -p <perfil>` sobre perfiles globales de `~/.hermes` y un solo directorio para todos. Usarlo exigiría modificar `~/.hermes` y pondría a los dos negocios en la misma lista. La entrega la hace JOE HQ, por negocio.
+
+### 4. Computadora del agente
+
+- Motor: `computer_use` nativo de Hermes (cua-driver), con permisos de Accesibilidad y Grabación de Pantalla ya concedidos.
+- **Prueba real:** el bot abrió la Calculadora, pulsó 125 × 8 = con clics reales y leyó "1,000" en pantalla (51 segundos).
+- **Paso a paso:** cada clic o tecla espera tu Permitir/Negar. Negué un clic: no se ejecutó.
+- **Tomar control:** detuvo el turno del bot en 1.5 segundos; la vista en vivo se apagó.
+- Sin préstamo, el bot ni siquiera tiene la herramienta.
+- Interfaz: pantalla real en vivo, indicador de puntos animado mientras piensa, lista de acciones, cuenta regresiva de 15 minutos. Captura 06 (solo local, muestra tu escritorio).
+- Añadí `open_app`: el driver de Hermes no abre apps cerradas.
+
+### 5. Voz local completa
+
+- **Salida:** VibeVoice-1.5B, pesos de `/Volumes/WinMac_AI/AI-Models`, sin conexión. 8.7 s de audio en 21 s; con el motor caliente, 7 s de audio en 11 s. Primera frase: unos 80 s por la carga.
+- **Dictado:** faster-whisper. Antes solo se había probado con silencio.
+- **Prueba de ida y vuelta:** VibeVoice dijo "Joe, la cotización del portón quedó lista. Falta tu aprobación para enviarla al cliente." y faster-whisper transcribió "Joe la cotización del portón quedó lista. Falta a tu aprobación para enviarla al cliente."
+- El motor de voz se apaga solo tras 10 minutos sin uso.
+
+## Guardarraíles
+
+- Aprobaciones: carga exacta visible, un solo uso, caducan a los 15 minutos. Al aprobar se vuelve a validar negocio, cuenta y carpeta.
+- Si una cuenta no está asignada, la aprobación falla cerrada y no se llama a Composio (probado).
+- Contraseña con hash scrypt, cookie HttpOnly/SameSite, CSRF, validación de Host y Origin, límite de intentos, CSP sin recursos externos.
+- Bitácora en `logs/joe-hq.log`: eventos, sin texto de conversaciones.
+
+## Pruebas
+
+- **47 pruebas unitarias, 0 fallos** (37 anteriores actualizadas más 10 nuevas). Sin red ni cuentas reales.
+- Sintaxis JavaScript válida. Revisión en Chrome limpio: sin errores de consola salvo el 401 del intento con contraseña incorrecta.
+- Pruebas reales de extremo a extremo en ensayo: Hermes, 6 conectores, mensajes entre bots, computadora, voz.
+
+## Capturas
+
+| Archivo | Qué muestra |
 |---|---|
-| Tres identidades iniciales | Guardián Ventas, Casa Kiraz y Holding D7 persistentes; creación y reapertura comprobadas con SQLite en entorno de prueba. |
-| Máximo cinco bots | Límite de servidor probado incluso con solicitudes concurrentes. Los demás trabajos se organizan como hilos. |
-| Separación de negocios | Memoria y biblioteca por negocio/bot; rutas absolutas, traversal y symlinks cruzados rechazados en pruebas. Holding tampoco sirve como puente automático entre negocios. |
-| Memoria nativa Hermes | Escritura real con la herramienta nativa de Hermes y lectura de su archivo `memories/MEMORY.md` en un home de prueba dentro del volumen. No es una memoria simulada en la base de datos de la app. |
-| Edición SOUL/memoria | Implementada; respaldo de la versión previa y bloqueo durante un turno comprobados. |
-| Tareas y biblioteca | Creación, listado y lectura de texto implementados. Sobrescritura de archivos existentes bloqueada. |
-| Autenticación local | Contraseña sin valor predeterminado, hash scrypt, cookie HttpOnly/SameSite, CSRF, Host/Origin y límite de intentos probados en memoria. No se configuró una contraseña de producción por Joe. |
-| Proveedor | Puente construido con Hermes instalado, endpoint Codex fijo y sin fallbacks de pago. Se comprobó construcción de AIAgent y lista exacta de seis herramientas permitidas. |
-| Selector de modelo | Codex Terra y Codex Sol, detectados en configuración existente. Cambio persistido y memoria conservada en prueba. No se adoptan los homes, conexiones ni memorias de perfiles globales. |
-| STT local | Faster-whisper cargó los pesos existentes y procesó realmente un WAV de silencio, devolviendo texto vacío. Esto verifica el pipeline local, no la precisión con habla española ni el micrófono del navegador. |
-| Drive por Composio | Lectura real de las cuatro raíces y listado de cuatro elementos en la carpeta Guardián por el conector autorizado de esta conversación. No equivale a validar el MCP desde la app local. |
-| Aprobaciones | Propuestas con carga exacta, expiración, rechazo y aprobación atómica de un solo uso. Prueba concurrente confirma una sola llamada al ejecutor de prueba. Las escrituras reales siguen deshabilitadas. |
-| Control humano | Coordinación de estado, revocación de todos los tickets y detención de procesos activos implementadas. No equivale a controlar ratón/teclado ni a mostrar la pantalla real. |
-| Interfaz | Sintaxis JavaScript válida; tokens de Bot HQ conservados; escape HTML y CSP sin recursos externos. Inspección visual en Chrome de la vista estática, sin afirmar E2E. |
+| `artifacts/captura-01-login-pide-contrasena.png` | Ventana limpia: pide contraseña |
+| `artifacts/captura-02-mensajes-entre-bots.png` | Guardián Ventas recibe la respuesta de su compañero |
+| `artifacts/captura-03-chat-del-companero.png` | El mensaje como lo recibió Cotizaciones |
+| `artifacts/captura-04-apps-por-negocio.png` | Apps con negocio dueño (correos y usuarios difuminados) |
+| `artifacts/captura-05-aprobaciones.png` | Evento de calendario esperando tu botón |
+| `artifacts/private/06-computadora-paso-pendiente.png` | Pantalla en vivo y paso pendiente. Solo local: muestra tu escritorio |
 
-## Pendientes y causas
+Todas son del ensayo (banda "ENSAYO"), no de tus conversaciones reales.
 
-| Requisito | Estado pendiente |
+## Pendientes y por qué
+
+| Pendiente | Motivo |
 |---|---|
-| App corriendo en localhost | No conseguido. `bash iniciar.sh` se detuvo correctamente por falta de escritura en `/Volumes/JOE_HQ/data`. Un intento independiente de bind a `127.0.0.1:8787` devolvió `PermissionError: Operation not permitted`. No se evadieron esas restricciones. |
-| Conversación real | No validada. El puente devuelve el bloqueo DNS de `chatgpt.com`; no se generó una respuesta de modelo de prueba. |
-| Lectura por MCP local de Hermes | Cliente implementado leyendo OAuth existente, sin refrescar ni modificar tokens globales. La inicialización local no pudo conectar; falta verificar protocolo, descubrimiento y lectura con red real. Evidencia: `artifacts/mcp-local-check.json`. |
-| Gemini con login | No habilitado. El perfil existente usa proveedor Gemini de API; no hay prueba de acceso mediante login sin llave. |
-| Comunicación nativa Hermes | No implementada. Hay relay servidor del mismo negocio y bloqueo entre negocios; no usa `message_agent` nativo ni devuelve respuestas automáticamente al emisor. Requiere integrar roster y runners aislados de Hermes. |
-| Computadora real por bot | No implementada. La esfera Dots es un indicador visual. No hay captura, input remoto, Spaces ni escritorios independientes de macOS. No se expusieron terminal/navegador libres que evadan los guardarraíles. |
-| Voz VibeVoice | No operativa. Pesos 1.5B presentes, pero falta runtime compatible probado; la app informa el pendiente y no sustituye por voz de pago. |
-| Conectores completos | Drive/Docs/Sheets tienen lectura acotada implementada, pendiente de prueba MCP local. Gmail, Calendar e Instagram solo pueden preparar propuestas; su ejecutor devuelve pendiente incluso tras aprobar. GitHub de los bots aún no está integrado. Falta asignar cuentas/permisos por negocio y probar cada escritura autorizada. |
-| Pruebas de navegador completas | No realizadas: servidor HTTP bloqueado. No se probó login, crear bot, chat, micrófono o control real desde la UI conectada. |
-| Clones y commits pequeños | `git clone` falló por DNS. `gh auth status` no pudo validar sus tokens en este entorno. `git init` falló al crear `.git` por sandbox. No hay commits locales ni push de la adaptación. |
-| iMessage | Preparado solo como documentación de fase 2; no lee ni envía mensajes. |
-
-## Procedencia y adaptación
-
-Fork creado y confirmado en la cuenta solicitada: https://github.com/lucojoma-byte/bot-hq . Upstream estudiado: https://github.com/nickvasilescu/bot-hq , commit `decf9a215cddd8792a5f20f4a11a87d4dffa6d15`.
-
-Se recuperaron 173 archivos originales de texto por el conector GitHub; todos coinciden con sus hashes Git. Se omitieron 20 archivos binarios, incluidas capturas originales y WAV de prueba. Los otros tres repositorios tienen snapshots parciales de documentación/referencia; **no son clones completos**. Hermes ejecuta su instalación existente, sin moverla.
-
-Se reutilizan los tokens de diseño de Bot HQ, su estructura visual sidebar/chat/composer/computadora y su formato de memoria. El backend Python y la interfaz local sin dependencias reemplazan los componentes cloud y los accesos sin aislamiento del original. La UI React y el servidor originales se conservan para referencia y no se arrancan ni se presentan como compilados. Esta es una adaptación sustancial, no el repositorio original íntegro funcionando.
-
-Bot HQ conserva licencia MIT y avisos de terceros. No se incorporó código de Bops al runtime. La UI usa iconos propios y no activos de Grok.
+| Chat en producción tras el reinicio | Sin tu contraseña. Pruébalo con un mensaje. |
+| Llave de Composio en `.env` | Solo tú la tienes. Sin ella, Composio depende de Hermes abierto. |
+| Asignar Gmail, Calendar, Instagram y GitHub | Es tu decisión de negocio; no la supuse. |
+| Ejecución real de una escritura | Exige tu aprobación. Probada con dobles de prueba, no contra Gmail/Calendar reales. |
+| Lectura de un Google Doc y de Sheets por rango | Programadas; sin prueba real. |
+| Micrófono y bocina con clic en el navegador | Probados por la API, no con clic humano. |
+| Voz con acento español | Las 2 voces de referencia son en inglés. Falta un WAV tuyo. |
+| Riesgo del modo "15 min" | El bot actúa sin pedir permiso por paso sobre tu pantalla real. Podría pulsar "Enviar" en una ventana abierta. Para lo sensible, paso a paso. |
+| Pantalla separada por bot | No existe en macOS: el escritorio por bot de Hermes es solo Linux. Hay una pantalla física y un bot a la vez. |
+| Descripción de cada paso | Hermes resume "click element #6"; hay que mirar la vista en vivo para saber qué es. |
+| Transporte nativo de Hermes entre bots | Exige modificar `~/.hermes`. Ver punto 3. |
+| Arranque automático | No se instaló servicio. Tras reiniciar la Mac: `bash iniciar.sh`. |
+| Rutas fijas de Hermes | `server.py` apunta a la instalación actual de Hermes; una actualización puede moverla. |
+| Gemini con login | No se ofrece: el perfil existente usa API. |
+| iMessage | Fase 2, apagado. |
+| Respuestas en vivo | La interfaz consulta cada 1 a 3 s; no muestra el texto mientras se escribe. |
+| Telemetría de cua-driver | El driver de Hermes envía telemetría "sin contenido" por defecto. No la cambié por ser configuración global. |
 
 ## Almacenamiento
 
-El volumen está realmente montado: `/dev/disk9s1 on /Volumes/JOE_HQ (apfs, local, ...)`. Capacidad observada: aproximadamente 300 GiB, casi todo disponible.
+| Carpeta en JOE_HQ | Tamaño |
+|---|---|
+| `app/` | 1.1 GB (1.0 GB es el entorno de voz) |
+| `cache/` | 1.0 GB |
+| `data/` | 1.8 MB |
+| `memoria/` | 132 KB |
+| `logs/`, `backups/` | menos de 1 MB |
 
-Medición antes de cerrar el reporte: `du -sk /Volumes/JOE_HQ/app` = **14,800 KiB, aproximadamente 14.5 MiB**, principalmente código, referencias, captura y fixtures conservados. El reporte y los registros finales añadirán unos KiB. Las carpetas `data/`, `memoria/`, `cache/`, `logs/` y `backups/` de producción siguen sin nuevos datos: el sandbox impidió escribirlas. Las pruebas viven temporalmente bajo `app/.test-runtime/`, dentro del mismo volumen; no deben confundirse con datos de producción.
+- Disco JOE_HQ: 1.2 GB usados de 300 GB.
+- **Disco interno:** las cachés internas de uv, npm, Hugging Face y Playwright no cambiaron hoy (fechas de modificación anteriores). El entorno de voz, `node_modules` y todas las cachés nuevas están en JOE_HQ.
+- El espacio libre interno bajó de 45 a 40 GB durante la sesión. No lo atribuyo al proyecto, pero no medí qué proceso lo usó.
+- Dependencias fuera de JOE_HQ que ya existían: Hermes (`~/.hermes`), Python 3.11 de Homebrew, Chrome, el código de VibeVoice (`~/code/VibeVoice`, solo para instalar) y los modelos en WinMac_AI.
 
-**Disco interno:** no se instalaron paquetes, modelos, node_modules ni cachés de proyecto nuevos allí. Se reutilizan Hermes/Python ya instalados internamente y modelos ya existentes en WinMac_AI, conforme a la instrucción de no mover Hermes. No hay una medición inicial exacta que permita certificar el delta global del disco interno; Chrome/Codex pueden mantener sus propios datos fuera del control del proyecto. No se afirma un consumo interno total de cero.
-
-La app prepara cachés de npm, pnpm, pip, uv, Playwright, Hugging Face, Torch y temporales en JOE_HQ. `.npmrc` y `pip.conf` son configuraciones locales del proyecto. `node_modules`, si se instalan después, quedan dentro de `app/`. No se alteraron configuraciones globales de gestores. El arranque se detiene si falta el volumen o los permisos; no existe fallback silencioso al disco interno.
-
-## Pruebas y correcciones
-
-Resultado final: **37 pruebas aprobadas, 0 fallos, 0.969 segundos**. `node --check local_web/app.js` también terminó con código 0. HTTP se probó con peticiones en memoria y Drive con respuestas controladas para los escenarios de aislamiento; eso no demuestra red real.
-
-Se corrigieron dos defectos detectados por auditoría adversaria: número incorrecto de parámetros SQL al guardar aprobaciones y respaldo de memoria que podía seguir un symlink hacia otro negocio. Se añadieron límites de modelos, control humano global, permisos privados de SQLite, rechazo temprano de raíces Drive ajenas y conexión HTTP cerrada tras cada respuesta.
-
-Evidencias adicionales: `.test-runtime/hermes-construction.json`, `hermes-native-memory.json`, `hermes-live.json`, `voice-silence.json` y `voice-tts.json`. No contienen credenciales. Los fixtures se conservan; no se borraron archivos.
-
-## Captura
-
-La captura `artifacts/captura-vista-estatica.png` muestra la revisión real en Chrome de `artifacts/vista_estatica.html`. Tiene el rótulo visible **“Vista estática · servidor no iniciado”** y controles deshabilitados. El panel señala que no es una captura del escritorio. No existe una captura de la app conectada a localhost porque no pudo arrancar en esta sesión.
-
-## Arranque y continuación
-
-Comando preparado para una Terminal con acceso al volumen:
+## Arranque
 
 ```bash
-cd /Volumes/JOE_HQ/app && bash iniciar.sh
+bash /Volumes/JOE_HQ/app/iniciar.sh
 ```
 
-Dirección prevista: `http://127.0.0.1:8787`. No hay exposición pública ni servicio automático instalado. La app, los archivos y la memoria son locales; Codex y Drive necesitan internet.
+Abre `http://127.0.0.1:8787`. Guía de uso: `README.md`.
 
-Para completar: verificar primero almacenamiento y arranque fuera del sandbox; después conversación y MCP reales, VibeVoice, computadora macOS aislada, comunicación Hermes nativa y adaptadores de escritura por negocio. Finalmente ejecutar E2E completo, crear commits y subir la adaptación al fork. Estos pasos permanecen pendientes y no se presentan como realizados.
+## Tus próximos pasos
 
-La copia para auditoría se solicita con el nombre `SYS_JOE-HQ_Reporte-Final_v1.0` en `04_SISTEMAS_MARKETING_Y_VIRALIDAD / 01_Borradores_y_Materia_Prima`. Su identificador y verificación de ubicación se registran por separado en `artifacts/entrega-google-doc.json`, para conservar este mismo contenido en ambos entregables.
+1. Entra y manda un mensaje a un bot.
+2. Apps → pega la llave `ck_…`.
+3. Apps → asigna cada cuenta a su negocio.
+4. Aprueba una acción de prueba (por ejemplo, un borrador de correo a ti mismo) para validar la primera escritura real.
+5. Agrega un WAV de tu voz en `data/voces/`.

@@ -1,0 +1,79 @@
+{
+ "fecha": "2026-11-15",
+ "version_app": "0.2.0",
+ "produccion": {
+  "url": "http://127.0.0.1:8787",
+  "escuchando": true,
+  "api_sin_sesion": 401,
+  "chat_probado_tras_reinicio": false,
+  "motivo": "sin la contraseña de Joe"
+ },
+ "pruebas_unitarias": {
+  "total": 47,
+  "fallos": 0,
+  "red": false
+ },
+ "ensayo_puerto_8788": {
+  "hermes_openai_codex": {
+   "ok": true,
+   "segundos_por_turno": "7-15",
+   "memoria_nativa_escrita": true
+  },
+  "composio_lecturas_reales": {
+   "drive": true,
+   "sheets_csv": true,
+   "gmail": true,
+   "calendar": true,
+   "instagram": true,
+   "github": true,
+   "google_doc_texto": false,
+   "sheets_por_rango": false
+  },
+  "aislamiento": {
+   "guardian_no_lee_carpeta_kiraz": true,
+   "kiraz_no_lee_archivo_guardian": true,
+   "cuenta_no_asignada_bloqueada": true
+  },
+  "escrituras_externas_ejecutadas": 0,
+  "aprobaciones": {
+   "propuesta_creada_por_bot": true,
+   "rechazo": true,
+   "aprobacion_real": false
+  },
+  "mensajes_entre_bots": {
+   "herramienta": "message_agent (Hermes Bot Mode)",
+   "respuesta_automatica": true,
+   "entre_negocios_bloqueado": true,
+   "transporte": "JOE HQ, no hermes -p"
+  },
+  "computadora": {
+   "motor": "Hermes computer_use / cua-driver",
+   "calculadora_125x8": "1,000",
+   "paso_negado_no_ejecuta": true,
+   "tomar_control_segundos": 1.5
+  },
+  "voz": {
+   "tts": "VibeVoice-1.5B float16 MPS",
+   "audio_s": 8.67,
+   "computo_s": 21.1,
+   "carga_fria_s": 79,
+   "stt": "faster-whisper",
+   "ida_y_vuelta_ok": true,
+   "microfono_navegador_probado": false
+  }
+ },
+ "git": {
+  "fork": "https://github.com/lucojoma-byte/bot-hq",
+  "rama": "joe-hq",
+  "commits_adaptacion": 20,
+  "rama_principal_del_fork": "joe-hq"
+ },
+ "pendiente_de_joe": [
+  "llave Composio ck_ en Apps",
+  "asignar cuentas por negocio",
+  "primer chat en producción",
+  "primera aprobación real"
+ ],
+ "api_de_pago_usada": false,
+ "hermes_global_modificado": false
+}

@@ -1,73 +1,102 @@
 # JOE HQ
 
-Tu sede local para conversar con Guardián Ventas, Casa Kiraz y Holding D7. Usa Hermes con tu sesión ChatGPT Pro. No utiliza xAI, Orgo ni llaves de modelos de pago.
+Tu sede local de agentes. Cada bot es Hermes Agent trabajando con tu suscripción ChatGPT Pro (proveedor `openai-codex`). Corre solo en esta Mac mini, con contraseña, y no usa ninguna API de modelos de pago.
 
-**Estado: implementación parcial. Esta sesión restringida no permitió iniciar el servidor. Lee [REPORTE_FINAL.md](REPORTE_FINAL.md) antes de usarla.**
+Estado real, pruebas y pendientes: [REPORTE_FINAL.md](REPORTE_FINAL.md).
 
 ## Abrir
 
-Conecta el disco JOE_HQ. Abre Terminal y pega esta línea:
+1. Conecta el disco **JOE_HQ**.
+2. En Terminal pega:
 
 ```bash
-cd /Volumes/JOE_HQ/app && bash iniciar.sh
+bash /Volumes/JOE_HQ/app/iniciar.sh
 ```
 
-Abre **http://127.0.0.1:8787** en Chrome. La primera vez, crea una contraseña de al menos 12 caracteres. No hay contraseña predeterminada. Para cerrar, vuelve a Terminal y presiona **Control+C**. No se instala ningún servicio automático ni se publica en internet.
+3. Abre **http://127.0.0.1:8787** en Chrome y entra con tu contraseña local.
 
-Si aparece “Sin permiso de escritura”, el proceso no tiene acceso al volumen. Esta versión se detiene; no guarda datos en el disco interno. Si dice que el puerto está ocupado, cierra la otra instancia de JOE HQ. Para ver el diagnóstico:
+Para cerrar: **Control+C** en esa Terminal. Si el disco no está conectado, la app no arranca y te lo dice. No se instala como servicio: después de reiniciar la Mac hay que volver a ejecutar el comando.
 
-```bash
-cd /Volumes/JOE_HQ/app && bash iniciar.sh --doctor
-```
+Diagnóstico rápido: `bash /Volumes/JOE_HQ/app/iniciar.sh --doctor`
 
-## Usarlo
+## Qué puedes hacer
 
-- Selecciona un bot y escribe un mensaje. La respuesta usa Hermes; necesita internet para tu sesión Codex.
-- **Nuevo hilo** conserva la memoria del bot y empieza otra conversación.
-- El selector ofrece Codex Terra y Codex Sol, detectados en la instalación. Cambia el ajuste de modelo del bot; no adopta memoria, secretos ni conexiones de los perfiles globales.
-- **Memoria** permite editar identidad, memoria y perfil de Joe. Guarda una copia previa en `backups/`.
-- **Tareas** y **Archivos** pertenecen exclusivamente a ese bot. No se sobrescriben archivos existentes.
-- **Conexiones** intenta leer las carpetas Drive autorizadas por el MCP `composio-lucojoma`. Incluye navegación, paginación y lectura de documentos y hojas como texto/CSV; falta verificarlo con red desde la app.
-- El micrófono transcribe con faster-whisper. La transcripción queda como borrador; tú decides enviarla. VibeVoice todavía no genera audio porque falta el runtime compatible.
-- **Tomar control** detiene los turnos activos. **Devolver control** permite trabajar de nuevo. Esto coordina los agentes; la captura, ratón, teclado y pantallas separadas de macOS siguen pendientes.
-- Las propuestas externas aparecen con su carga exacta en **Aprobaciones**. Los adaptadores de escritura aún no están habilitados; aprobar actualmente devuelve el pendiente sin enviar nada.
-
-Máximo cinco bots. Los bots adicionales tienen identidad y memoria propia dentro de su negocio. Un bot nuevo debe asignarse a Guardián, Casa Kiraz o Holding. No se permite cambiar después su negocio. Los mensajes entre bots de distintos negocios están bloqueados; los del mismo negocio usan transporte JOE HQ, todavía no el protocolo nativo de Hermes.
-
-## Dónde se guarda
-
-| Carpeta del disco JOE_HQ | Contenido |
+| En pantalla | Qué hace |
 |---|---|
-| `app/` | Código y documentación |
-| `data/` | Base de datos y biblioteca de cada bot |
-| `memoria/guardian/` | Identidad y memoria nativa de Guardián |
-| `memoria/casa_kiraz/` | Identidad y memoria nativa de Casa Kiraz |
-| `memoria/holding/` | Identidad y memoria nativa de Holding |
-| `cache/` | Cachés npm/pnpm/pip/uv/Playwright y temporales |
-| `logs/` | Reservado para diagnóstico operativo sin contenidos privados |
-| `backups/` | Versiones anteriores de memoria |
+| **Chat** | Le escribes a un bot; responde Hermes. El micrófono dicta con faster-whisper. La bocina lee la respuesta con VibeVoice. |
+| **Crear bot** | Hasta 5 bots. Cada uno pertenece a Guardián, Casa Kiraz o Holding y no se puede cambiar. |
+| **Memoria** | Identidad (SOUL), memoria y contexto de Joe de ese bot. Guarda respaldo antes de cada cambio. |
+| **Tareas** | Tareas del bot y "Pedirle que le escriba a un compañero". |
+| **Archivos** | Biblioteca privada del bot. |
+| **Apps** | Drive, Sheets, Gmail, Calendar, Instagram y GitHub por Composio. Aquí asignas cada cuenta a un negocio. |
+| **Aprobar** | Todo envío, evento, publicación o borrado espera tu botón. |
+| **Computadora del agente** | Le prestas la pantalla a un bot y lo ves trabajar en vivo. |
 
-La app no mueve ni cambia `~/.hermes`. Lee la sesión existente Codex y OAuth MCP en memoria, sin copiar las credenciales. No se requiere llave Composio mientras ese OAuth funcione. Si se integra una llave más adelante, solo puede guardarse en `app/.env`, nunca en Git.
+## Reglas que el servidor hace cumplir
 
-## Lo que falta
+- **Guardián y Casa Kiraz nunca se mezclan.** Memoria, archivos, carpetas de Drive, cuentas y mensajes entre bots están separados por negocio. Holding tampoco sirve de puente.
+- **Nada sale sin tu botón.** Los bots solo *preparan* correos, eventos, publicaciones y borrados; se ejecutan cuando pulsas **Aprobar**. Cada aprobación sirve una vez y caduca en 15 minutos.
+- **Solo localhost.** Escucha en `127.0.0.1`. Toda la API exige tu contraseña.
+- **Cero API de pago.** Único proveedor de modelos: Hermes `openai-codex`. Única llave permitida: Composio.
 
-Verificar arranque y chat real fuera del sandbox, integrar voz VibeVoice, computadora macOS con aislamiento y control real, protocolo nativo interbot y escritura por conectores con cuentas separadas. Gemini no se ofrece porque el perfil existente utiliza proveedor de API; no se comprobó login gratuito. iMessage está documentado en [FASE_2_IMESSAGE.md](FASE_2_IMESSAGE.md) y apagado.
+## Apps (Composio)
 
-## Para mantenimiento técnico
+1. Pestaña **Apps** → "Credencial de Composio" → pega tu llave de consumidor (`ck_…`) → **Guardar solo en .env**. Se prueba antes de guardarse y queda solo en `app/.env`.
+2. En Gmail, Calendar, Instagram y GitHub elige el **Negocio dueño**. Sin asignar, ningún bot las usa.
+3. Drive y Sheets no se asignan: cada negocio ve solo su carpeta (definidas en `drive-folders.json`).
 
-No se necesita instalar npm ni pip para el servidor. Se reutiliza el Python ya instalado por Hermes y los pesos locales de voz. Las rutas detectadas están en `server.py` y `local_engine/voice.py`; si Hermes cambia su instalación, hay que volver a detectarlas.
+Sin llave, la app usa la sesión de Composio que tiene Hermes. Esa sesión dura 1 hora y solo se renueva con Hermes abierto.
+
+## Computadora del agente
+
+- **Prestar · paso a paso:** apruebas cada clic y cada tecla. Úsalo para todo lo sensible.
+- **Prestar · 15 min:** el bot actúa solo mientras lo ves en vivo.
+- **Tomar control:** corta al bot en el acto.
+
+Es tu pantalla real, con tus sesiones abiertas. En modo 15 min el bot podría pulsar un botón de enviar en una ventana abierta: solo lo frenan sus instrucciones y tu vigilancia. Si la vista en vivo falla, da permiso de Grabación de Pantalla a Terminal en Ajustes del Sistema.
+
+## Voz
+
+- Dictado: faster-whisper. Salida: VibeVoice-1.5B. Todo local; los modelos se leen de `/Volumes/WinMac_AI/AI-Models` (ese disco debe estar conectado).
+- La primera frase tarda cerca de un minuto en cargar; las siguientes, unos 10 segundos. El motor se apaga solo tras 10 minutos sin uso.
+- Para una voz en español: guarda un WAV tuyo de 10 a 30 segundos en `/Volumes/JOE_HQ/data/voces/` y elígelo en Apps → Voz local.
+- Si falta el entorno de voz: `bash /Volumes/JOE_HQ/app/instalar_voz.sh`
+
+## Dónde vive cada cosa (todo en el disco JOE_HQ)
+
+| Carpeta | Contenido |
+|---|---|
+| `app/` | Código, `.env`, entorno de voz (`.venv-voz`), `node_modules` de pruebas |
+| `data/` | Base de datos, bibliotecas de cada bot, voces |
+| `memoria/guardian/`, `memoria/casa_kiraz/`, `memoria/holding/` | Memoria nativa de Hermes de cada negocio |
+| `cache/` | Cachés de npm, pip, uv, Playwright, audio temporal y datos de ensayo |
+| `logs/` | `joe-hq.log` (eventos, sin contenido de conversaciones) y `voz.log` |
+| `backups/` | Versiones anteriores de memoria y de la base |
+
+No se modifica `~/.hermes`. La app lee su sesión Codex sin copiarla.
+
+## Si algo falla
+
+| Mensaje | Qué hacer |
+|---|---|
+| "el disco JOE_HQ no está conectado" | Conecta el disco y repite el comando. |
+| "JOE HQ ya está corriendo" | Abre http://127.0.0.1:8787. |
+| "La sesión OAuth de Composio venció" | Abre Hermes o guarda tu llave en Apps. |
+| "…no está asignado a este negocio" | Asigna la cuenta en Apps → Negocio dueño. |
+| El bot no responde | Revisa internet y `logs/joe-hq.log`. |
+
+## Mantenimiento técnico
 
 ```bash
-python3 -B -m unittest discover -s tests -v
+cd /Volumes/JOE_HQ/app
+python3 -B -m unittest discover -s tests          # 47 pruebas, sin red ni cuentas reales
 node --check local_web/app.js
+bash iniciar.sh --staging                         # ensayo: puerto 8788, datos en cache/staging
+node tests/e2e/capturas.mjs http://127.0.0.1:8788 /Volumes/JOE_HQ/cache/staging/.staging-password artifacts
 ```
 
-Los tests conservan sus archivos dentro de `app/.test-runtime/`, excluidos de Git. No usan cuentas reales ni borran datos. Configuración de caché por proyecto: `.npmrc`, `pip.conf` y variables preparadas por `iniciar.sh`/`server.py`; no se alteró la configuración global de herramientas.
+Rutas fijas que pueden cambiar si actualizas Hermes: `HERMES_PYTHON` en `server.py` y `SOURCE` en `local_engine/hermes_bridge.py`.
 
 ## Procedencia
 
-Fork solicitado: [lucojoma-byte/bot-hq](https://github.com/lucojoma-byte/bot-hq). Se estudiaron Bot HQ, grokbot-clone, Bops y Hermes. `bot-hq/` conserva 173 archivos originales de texto con hashes Git verificados. El entorno impidió `git clone`, descargas binarias y crear `.git`; se obtuvieron snapshots mediante el conector GitHub. Las referencias son parciales y **no equivalen a clones completos**.
-
-La UI local reutiliza los tokens originales de Bot HQ, su estructura de chats y el formato de memoria nativa. El backend local reemplaza las integraciones Orgo/xAI y el acceso libre del agente por herramientas validadas. Los servidores anteriores se conservan solo como referencia y no se arrancan. La UI React original no fue compilada; se preparó una interfaz local sin dependencias de navegador para poder ejecutarla sin instalar paquetes.
-
-Licencia original Bot HQ: MIT en `bot-hq/LICENSE`; avisos en `bot-hq/THIRD_PARTY_NOTICES.md`. Bops se usó como referencia visual, sin incorporar su código ni activos a la app. No se utilizan ilustraciones ni marcas de Grok en la UI local.
+Adaptación del fork [lucojoma-byte/bot-hq](https://github.com/lucojoma-byte/bot-hq) (rama `joe-hq`) de [nickvasilescu/bot-hq](https://github.com/nickvasilescu/bot-hq), licencia MIT. El original se conserva íntegro en `bot-hq/` como referencia y no se arranca; el servidor Python y la interfaz local reemplazan sus integraciones de nube. iMessage queda para fase 2 ([FASE_2_IMESSAGE.md](FASE_2_IMESSAGE.md)).
