@@ -35,11 +35,12 @@ from local_engine.core import (Store, Problem, ROOT, STAGING_ROOT, PROFILES, SCO
                                EXCLUSIVE_TOOLKITS, SIBLINGS, CROSS_MESSAGE_LIMIT, relation, preflight, cache_environment,
                                safe_path, short_text, atomic_write)
 from local_engine.composio_mcp import ComposioMCP, TOKEN_FILE, TOOLKITS
+from local_engine.computer_payload import freeze_payload, verify_payload, PayloadError
 
 APP = Path(__file__).resolve().parent
 HERMES_PYTHON = Path('/Users/m4/.hermes/installs/038c51e759d66ce1/environments/e5a1728f585a44cdb63518d0e4d705e5/venv/bin/python')
 VOICE_PYTHON = APP / '.venv-voz/bin/python'
-VERSION = '0.2.0'
+VERSION = '0.3.1'
 TURN_SECONDS, COMPUTER_TURN_SECONDS = 330, 900
 GRANT_SECONDS = 15 * 60
 MAX_CHAIN_MESSAGES = 8
@@ -48,6 +49,8 @@ STATIC_FILES = ('index.html', 'app.js', 'styles.css', 'upstream-tokens.css')
 # ── Computadora del agente: política de la compuerta (la aplica el servidor, no el modelo) ──────────
 # Lista BLANCA. Lo que no esté aquí se trata como acción con efecto.
 PASSIVE_ACTIONS = frozenset({'capture', 'list_apps', 'list_windows', 'wait'})          # solo mirar
+COMPUTER_ACTIONS = PASSIVE_ACTIONS | frozenset({'click', 'double_click', 'right_click', 'middle_click', 'drag',
+                                              'scroll', 'type', 'key', 'set_value', 'focus_app'})
 # Controles donde la rueda del ratón CAMBIA un valor: ahí desplazarse no es "solo ver".
 VALUE_ROLES = frozenset({'AXSlider', 'AXIncrementor', 'AXStepper', 'AXPopUpButton', 'AXComboBox', 'AXTextField',
                          'AXValueIndicator', 'AXColorWell', 'AXDateField', 'AXTimeField', 'AXLevelIndicator', 'AXDial'})
@@ -235,7 +238,8 @@ class Application:
                       'tts_available': self.voice_out.available(), 'tts_verified_at': self.voice_out.verified,
                       'tts_error': self.voice_out.last_error, 'voices': self.voice_out.voices(), 'voice': self.voice_out.voice(),
                       'loaded': bool(self.voice_out.process and self.voice_out.process.poll() is None)},
-            'computer': {'engine': 'Hermes computer_use (cua-driver)', 'granted': c['owner'] == 'agent' and c['expires'] > time.time()},
+            'computer': {'engine': 'Hermes computer_use (cua-driver)', 'granted': c['owner'] == 'agent' and c['expires'] > time.time(),
+                         'payload_version': 1},
             'native_interbot': 'message_agent de Hermes; entrega JOE HQ; Guardián↔Casa Kiraz con aprobación y sala limpia',
             'imessage': 'fase 2',
         }
@@ -248,7 +252,7 @@ class Application:
             return {'owner': c['owner'], 'bot_id': c['bot_id'], 'mode': c['mode'],
                     'seconds_left': max(0, int(c['expires'] - time.time())) if c['owner'] == 'agent' else 0,
                     'events': c['events'][-12:],
-                    'pending': c['pending'] and {k: c['pending'][k] for k in ('id', 'action', 'summary', 'where', 'warning', 'created')}}
+                    'pending': c['pending'] and {k: c['pending'][k] for k in ('id', 'action', 'summary', 'where', 'warning', 'created', 'payload', 'digest')}}
 
     def state(self):
         return {'bots': self.store.bots(), 'profiles': PROFILES, 'capabilities': self.capabilities(),
@@ -585,7 +589,12 @@ class Application:
                     raise Problem('Modo inválido.')
                 if c['owner'] == 'agent' and c['bot_id'] not in (None, bot_id) and c['expires'] > time.time():
                     raise Problem('Otro bot tiene la computadora. Toma el control primero.', 409)
-                c.update({'owner': 'agent', 'bot_id': bot_id, 'mode': mode, 'expires': time.time() + GRANT_SECONDS, 'events': [], 'pending': None})
+                if c['pending']:
+                    c['pending']['decision'] = 'deny'
+                    with self.gate:
+                        self.gate.notify_all()
+                c.update({'owner': 'agent', 'bot_id': bot_id, 'mode': mode, 'expires': time.time() + GRANT_SECONDS,
+                          'grant_id': secrets.token_hex(16), 'events': [], 'pending': None})
                 log.info('computadora: prestada a %s (modo %s)', bot_id, mode)
             else:
                 holder = c['bot_id']
@@ -674,37 +683,66 @@ class Application:
           · Cualquier otra cosa (clic, tecla, texto, arrastre, valor, abrir app cerrada):
               modo «solo ver»   → se niega siempre, sin preguntar.
               modo «paso a paso» → espera a que Joe pulse Permitir para ESE paso; si no, no ocurre."""
-        step = step if isinstance(step, dict) else {}
-        action = str(step.get('action') or '')[:40]
+        step = dict(step) if isinstance(step, dict) else {}
+        try:
+            tool = (step.get('payload') or {}).get('tool')
+            if tool not in ('computer_use', 'open_app'):
+                raise PayloadError('Falta la carga completa del paso. Actualiza el servidor y el puente.')
+            payload = verify_payload(step.get('payload'), step.get('digest'), expected_tool=tool)
+            args = payload['arguments']
+            action = args.get('action') if tool == 'computer_use' else 'open_app'
+            if action not in COMPUTER_ACTIONS | {'open_app'} or step.get('action') != action:
+                raise PayloadError('La acción no corresponde a la carga completa.')
+            if tool == 'computer_use' and action == 'open_app':
+                raise PayloadError('Abrir app requiere su herramienta propia.')
+            if tool == 'open_app' and (set(args) != {'name'} or args.get('name') != step.get('app')):
+                raise PayloadError('La aplicación cambió antes de pedir permiso.')
+            # Clasificar los argumentos que se van a ejecutar, nunca una versión recortada.
+            if tool == 'computer_use':
+                for key in ('text', 'keys', 'value', 'coordinate', 'modifiers', 'direction', 'button'):
+                    step[key] = args.get(key)
+                if args.get('app'):
+                    step['app'] = args['app']
+                element = step.get('element')
+                if isinstance(element, dict) and element.get('index') != args.get('element'):
+                    step['element'] = None
+            digest = step['digest']
+        except (PayloadError, AttributeError, TypeError):
+            return {'allow': False, 'reason': 'Paso inválido o incompleto: no se ejecutará nada. Solicita el paso con su carga y huella completas.'}
         with self.store.lock:
             c = self.store.computer
             if not self.computer_granted(bot_id):
                 return {'allow': False, 'reason': 'Joe no te ha prestado la computadora (o tomó el control). Pídele que la active.'}
             kind = self.classify(step, self.app_running(str(step.get('app') or '')) if action == 'open_app' else None)
             if kind == 'look':
-                return {'allow': True}
+                return {'allow': True, 'digest': digest}
             text, where, warning = self.explain(step)
             if c['mode'] != 'step':
                 c['events'].append({'time': time.time(), 'action': action, 'summary': text, 'ok': False, 'blocked': True})
                 del c['events'][:-40]
                 log.info('computadora: bloqueado en solo ver (%s) a %s', action, bot_id)
                 return {'allow': False, 'reason': VIEW_ONLY}
+            if c['pending'] is not None:
+                return {'allow': False, 'reason': 'Ya hay otro paso esperando a Joe. No se reemplazó ni ejecutó ninguno.'}
             pending = {'id': secrets.token_hex(6), 'bot_id': bot_id, 'action': action, 'summary': text, 'where': where,
-                       'warning': warning, 'created': time.time(), 'decision': None}
+                       'warning': warning, 'created': time.time(), 'decision': None, 'payload': payload, 'digest': digest,
+                       'grant_id': c.get('grant_id')}
             c['pending'] = pending
         deadline = time.time() + 150
         with self.gate:
             while pending['decision'] is None and time.time() < deadline:
                 self.gate.wait(timeout=1.0)
         with self.store.lock:
-            if self.store.computer['pending'] is pending:
+            still_current = self.store.computer['pending'] is pending
+            if still_current:
                 self.store.computer['pending'] = None
-            allowed = pending['decision'] == 'allow' and self.computer_granted(bot_id) and self.store.computer['mode'] == 'step'
+            allowed = (still_current and pending['decision'] == 'allow' and self.computer_granted(bot_id)
+                       and self.store.computer['mode'] == 'step' and self.store.computer.get('grant_id') == pending['grant_id'])
             if not allowed:
                 self.store.computer['events'].append({'time': time.time(), 'action': action, 'summary': text, 'ok': False, 'blocked': True})
         log.info('computadora: paso %s de %s -> %s', action, bot_id, 'permitido' if allowed else 'negado')
         if allowed:
-            return {'allow': True}
+            return {'allow': True, 'digest': digest}
         return {'allow': False, 'reason': 'Joe negó este paso. No insistas.' if pending['decision'] == 'deny' else 'Joe no respondió a tiempo; paso cancelado.'}
 
     def open_app(self, bot_id, name):
@@ -712,7 +750,8 @@ class Application:
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ .+&_-]{1,60}', name.strip()):
             raise Problem('Nombre de app inválido.')
         name = name.strip()
-        verdict = self.computer_gate(bot_id, {'action': 'open_app', 'app': name})
+        payload, digest = freeze_payload('open_app', {'name': name})
+        verdict = self.computer_gate(bot_id, {'action': 'open_app', 'app': name, 'payload': payload, 'digest': digest})
         if not verdict.get('allow'):
             reason = verdict.get('reason')
             if self.store.computer['mode'] == 'view' and reason == VIEW_ONLY:
@@ -732,13 +771,17 @@ class Application:
         time.sleep(1.5)
         return {'opened': True, 'app': name, 'next': "Usa computer_use capture con app='%s' para ver sus elementos." % name}
 
-    def computer_decide(self, ident, decision):
+    def computer_decide(self, ident, decision, digest=None):
         if decision not in ('allow', 'deny'):
             raise Problem('Decisión inválida.')
         with self.store.lock:
             pending = self.store.computer['pending']
             if not pending or pending['id'] != ident:
                 raise Problem('Ese paso ya no está pendiente.', 409)
+            if pending['decision'] is not None:
+                raise Problem('Ese paso ya tiene una decisión.', 409)
+            if decision == 'allow' and (not isinstance(digest, str) or not secrets.compare_digest(digest, pending['digest'])):
+                raise Problem('La huella del paso cambió o falta. Recarga y revisa la carga completa antes de permitir.', 409)
             pending['decision'] = decision
         with self.gate:
             self.gate.notify_all()
@@ -976,7 +1019,7 @@ class Handler(BaseHTTPRequestHandler):
                 store.setting('voice', data['voice'])
                 return self.reply(200, {'voice': data['voice']})
             if path == '/api/computer/decide':
-                return self.reply(200, app.computer_decide(data.get('id'), data.get('decision')))
+                return self.reply(200, app.computer_decide(data.get('id'), data.get('decision'), data.get('digest')))
             parts = path.strip('/').split('/')
             if len(parts) == 3 and parts[:2] == ['api', 'approvals']:
                 result = store.decide(parts[2], data.get('decision'), app.execute_approved)

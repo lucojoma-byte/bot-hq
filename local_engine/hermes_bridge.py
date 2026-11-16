@@ -31,6 +31,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+if __package__:
+    from .computer_payload import PayloadError, freeze_payload, approved_arguments
+else:
+    from computer_payload import PayloadError, freeze_payload, approved_arguments
+
 VOLUME = Path('/Volumes/JOE_HQ')
 SOURCE = Path('/Users/m4/.hermes/hermes-agent')
 GLOBAL_HOME = Path('/Users/m4/.hermes')
@@ -312,7 +317,11 @@ def track_captures():
 
 
 def describe_step(action, args):
-    """Datos EXACTOS del paso (qué elemento, qué texto, qué teclas). El servidor decide con esto."""
+    """Resumen del paso y carga ÍNTEGRA desligada del original, ligada a su huella."""
+    payload, digest = freeze_payload('computer_use', args)
+    args = payload['arguments']
+    if str(args.get('action') or '').strip().lower() != action:
+        raise PayloadError('La acción no coincide con los argumentos del paso.')
     def element(value):
         try:
             index = int(value)
@@ -332,11 +341,11 @@ def describe_step(action, args):
             'modifiers': [str(m)[:12] for m in (args.get('modifiers') or [])][:6],
             'foreground': args.get('delivery_mode') == 'foreground' or bool(args.get('bring_to_front')) or bool(args.get('raise_window'))}
     if action == 'type':
-        step['text'] = str(args.get('text') or '')[:2000]
+        step['text'] = str(args.get('text') or '')
     if action == 'key':
-        step['keys'] = str(args.get('keys') or '')[:80]
+        step['keys'] = str(args.get('keys') or '')
     if action == 'set_value':
-        step['value'] = str(args.get('value') or '')[:300]
+        step['value'] = str(args.get('value') or '')
     if action == 'drag':
         step['from'] = element(args.get('from_element')) if args.get('from_element') is not None else point(args.get('from_coordinate'))
         step['to'] = element(args.get('to_element')) if args.get('to_element') is not None else point(args.get('to_coordinate'))
@@ -344,7 +353,52 @@ def describe_step(action, args):
         step['direction'] = str(args.get('direction') or '')[:8]
     if action == 'click' and str(args.get('button') or 'left') != 'left':
         step['button'] = str(args.get('button'))[:8]
+    step['payload'] = payload
+    step['digest'] = digest
     return step
+
+
+def guarded_computer_handler(native, callback):
+    """Crea un handler comprobable sin cargar ni accionar la computadora real."""
+    def guarded(args, **kw):
+        action = str(args.get('action') or '').strip().lower() if isinstance(args, dict) else ''
+        try:
+            step = describe_step(action, args)
+            verdict = callback('computer_gate', step, timeout=200)
+            gate_result = verdict.get('result') if isinstance(verdict, dict) else None
+            if (not isinstance(verdict, dict) or verdict.get('ok') is not True
+                    or not isinstance(gate_result, dict) or gate_result.get('allow') is not True):
+                reason = ((gate_result or {}).get('reason') if isinstance(gate_result, dict) else None)
+                if not reason and isinstance(verdict, dict):
+                    reason = verdict.get('error')
+                return json.dumps({'ok': False, 'action': action, 'code': 'joe_hq_denied',
+                                   'error': reason if isinstance(reason, str) else 'Joe no autorizó esta acción.'}, ensure_ascii=False)
+            exact_args = approved_arguments(step['payload'], step['digest'], verdict)
+        except PayloadError as exc:
+            return json.dumps({'ok': False, 'action': action, 'code': 'joe_hq_denied',
+                               'error': str(exc)}, ensure_ascii=False)
+        except Exception:
+            return json.dumps({'ok': False, 'action': action, 'code': 'joe_hq_denied',
+                               'error': 'No se pudo verificar la autorización exacta del paso.'}, ensure_ascii=False)
+        try:
+            # Solo se ejecuta la copia cuyos bytes JSON vio y aprobó el servidor.
+            result = native(exact_args, **kw)
+        except Exception:
+            result = json.dumps({'ok': False, 'error': 'El controlador no completó el paso autorizado.'}, ensure_ascii=False)
+        failed = False
+        if isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+                failed = isinstance(parsed, dict) and (bool(parsed.get('error')) or parsed.get('ok') is False)
+            except (ValueError, TypeError):
+                pass
+        elif isinstance(result, dict):
+            failed = bool(result.get('error')) or result.get('ok') is False
+        # El registro no decide ni repite la acción, aunque falle el callback.
+        with contextlib.suppress(Exception):
+            callback('computer_event', {**step, 'ok': not failed}, timeout=10)
+        return result
+    return guarded
 
 
 def enable_computer(callback):
@@ -358,21 +412,7 @@ def enable_computer(callback):
     # La aprobación la decide el servidor JOE HQ (permiso de Joe); la capa interna de Hermes queda delegada.
     cu._request_approval = lambda action, args: None
 
-    def guarded(args, **kw):
-        args = args if isinstance(args, dict) else {}
-        action = str(args.get('action') or '').strip().lower()
-        step = describe_step(action, args)
-        # El servidor responde permitir/negar para ESTE paso exacto; mientras tanto no se ejecuta nada.
-        verdict = callback('computer_gate', step, timeout=200)
-        allowed = isinstance(verdict, dict) and verdict.get('ok') and (verdict.get('result') or {}).get('allow') is True
-        if not allowed:
-            reason = ((verdict.get('result') or {}).get('reason') if isinstance(verdict, dict) and verdict.get('ok')
-                      else (verdict or {}).get('error')) or 'Joe no autorizó esta acción.'
-            return json.dumps({'ok': False, 'action': action, 'code': 'joe_hq_denied', 'error': reason}, ensure_ascii=False)
-        result = native(args, **kw)
-        failed = isinstance(result, str) and result.lstrip().startswith('{"error"')
-        callback('computer_event', {**step, 'ok': not failed}, timeout=10)
-        return result
+    guarded = guarded_computer_handler(native, callback)
 
     registry.register(name='computer_use', toolset='computer_use', schema=COMPUTER_USE_SCHEMA,
                       handler=guarded, check_fn=cu.check_computer_use_requirements, override=True)
