@@ -16,3 +16,9 @@ connections.json
 references/
 .venv*/
 *.log
+# Entrega local: enlaces de auditoría, estado de datos y respaldos del reporte
+artifacts/entrega-google-doc.json
+artifacts/entrega-github.json
+artifacts/estado-datos-continuacion.json
+artifacts/anterior/REPORTE_FINAL-v1.1.md
+artifacts/anterior/verificacion-v1.1.json
