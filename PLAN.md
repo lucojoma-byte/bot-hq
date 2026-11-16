@@ -1,16 +1,18 @@
 # JOE HQ — Plan de ejecución
 
-## Continuación autorizada de Codex — código y entrega cerrados; validación en vivo pendiente
+## Cierre de v1 local — alcance decidido; 0.3.2 desplegada el 15/11 a las 23:30
+
+Estado al cierre: bloqueo Guardián↔Casa Kiraz activo en producción; hermanos, puente y tareas probados en navegador (ensayo); detección de Mac bloqueada añadida. Pendiente: repetir «paso a paso» en navegador con la Mac desbloqueada. Detalle en REPORTE_FINAL.md.
 
 Joe pidió completar el trabajo y reportar dudas/fallas al final. **Excepción explícita: conservar el comportamiento actual de SOUL.md, incluida su carga en sala limpia; auditarlo después.** No modificar ese comportamiento ni declararlo resuelto.
 
-1. Corregir aprobación truncada: vincular carga completa e inmutable con el paso autorizado y mostrarla íntegra en UI.
-2. Completar pruebas deterministas de mensajes, tareas y rutas entre negocios; distinguir pruebas con dobles y E2E real.
-3. Mantener modos solo ver/paso a paso; no volver a préstamo de acciones sin aprobación.
-4. Actualizar guía, reporte, evidencia y Google Doc. Conservar evidencia previa con su atribución.
-5. Intentar commits y validación real dentro de los permisos efectivos. Si el sandbox impide red, localhost, Git o escritura fuera de app, documentarlo sin evadirlo.
+1. Aprobación exacta de computadora y prueba viva 7→8: completadas, la última confirmada por Joe en la UI.
+2. Bloquear mensajes y tareas directos Guardián↔Casa Kiraz. Holding continúa con cada negocio, sin servir de puente en una cadena.
+3. Conservar pantalla compartida, un bot a la vez, Solo ver/Paso a paso; avisar que durante el préstamo el bot ve las ventanas abiertas.
+4. Mantener `message_agent` con entrega JOE HQ. Gemini, pantalla independiente y transporte nativo completo se aplazan; `SOUL.md` queda para auditoría; iMessage sigue en fase 2.
+5. Alinear README, reporte y Google Doc, preservando secretos y las aprobaciones humanas.
 
-Resultado: 74 pruebas locales pasan. Carga exacta y UI corregidas; guion E2E actualizado. Código publicado por conector GitHub en `897a019` y guion en `b1e7678`; Git local no pudo crear index.lock. README/reporte y Google Doc actualizados. No se reinició producción ni se ejecutó el E2E real nuevo: el sandbox y el acceso de navegador de esta sesión lo impidieron. Ver el dictamen completo en REPORTE_FINAL.md; no confundir cierre de código con despliegue validado.
+Resultado parcial de esta sesión: 75 pruebas automatizadas pasan en el árbol local; lecturas en vivo de Drive y Docs por la interfaz y cambio/restauración de perfil verificados. Reiniciar con el parche de mensajería está bloqueado por permisos efectivos de escritura en `/Volumes/JOE_HQ/data`. Sheets por rango y voz continúan bajo prueba. La actualización del Google Doc espera la aprobación explícita de Joe para esta escritura externa.
 
 ## Punto de partida comprobado
 

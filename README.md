@@ -4,7 +4,7 @@ Tu sede local de agentes. Cada bot es Hermes Agent trabajando con tu suscripció
 
 Estado real, pruebas y pendientes: [REPORTE_FINAL.md](REPORTE_FINAL.md).
 
-El reporte de Claude registra pruebas reales de la app en producción (`8787`) y ensayo (`8788`). La revisión posterior confirmó el código y 55 pruebas unitarias; no volvió a comprobar la sesión de producción desde el sandbox actual. El reporte final distingue esas evidencias de las verificaciones nuevas.
+Versión en producción: **0.3.2**. El reporte final separa lo probado en navegador real, lo probado solo con pruebas automatizadas y lo que sigue pendiente.
 
 ## Abrir
 
@@ -37,13 +37,13 @@ Diagnóstico rápido: `bash /Volumes/JOE_HQ/app/iniciar.sh --doctor`
 ## Separación y límites actuales
 
 - **Memoria, biblioteca, carpetas de Drive y cuentas asignadas están separadas por negocio.** Un bot no recibe las herramientas genéricas de archivos, terminal o Composio.
-- **Mensajes entre bots:** dentro del mismo negocio y entre Holding y cada negocio se entregan directamente. Un mensaje entre Guardián y Casa Kiraz espera que apruebes su texto exacto en **Aprobar**. El receptor lo atiende en un turno restringido, sin su historial, memoria nativa, biblioteca ni apps. **Excepción vigente:** sí carga su `SOUL.md`; Joe pidió conservar ese comportamiento para auditarlo después. No guardes secretos ni datos de clientes en SOUL mientras siga esa excepción.
-- **Holding:** el servidor bloquea una cadena de mensajes que pretenda pasar de un negocio hermano al otro. No analiza el significado del texto ni garantiza detectar información copiada por un bot en una conversación nueva.
+- **Mensajes y tareas entre bots:** dentro del mismo negocio y entre Holding y cada negocio se entregan directamente. Guardián y Casa Kiraz no pueden enviarse mensajes ni tareas directos; el servidor rechaza ambos sentidos antes de crear mensajes, tareas o aprobaciones. Holding no reenvía mensajes ni tareas de un negocio hermano al otro dentro de una misma cadena. No analiza el significado de conversaciones separadas.
+- **SOUL pendiente de auditoría:** los turnos restringidos entre negocios cargan el `SOUL.md` del destinatario. Joe pidió conservarlo para una auditoría posterior. No guardes secretos ni datos de clientes en SOUL mientras siga esa excepción.
 - **Nada sale sin tu botón.** Los bots solo *preparan* correos, eventos, publicaciones y borrados; se ejecutan cuando pulsas **Aprobar**. Cada aprobación sirve una vez y caduca en 15 minutos.
 - **Solo localhost.** Escucha en `127.0.0.1`. Las rutas de datos y acciones exigen sesión con tu contraseña; los callbacks de Hermes usan credenciales internas temporales.
 - **Cero API de pago.** Único proveedor de modelos: Hermes `openai-codex`. Única llave permitida: Composio.
 
-Los bots llaman `message_agent` con el contrato de Hermes, pero la entrega y el retorno de respuestas los realiza JOE HQ. Esto no es el transporte nativo completo de Hermes y no requiere cambiar la configuración global existente.
+Los bots llaman `message_agent` con el contrato de Hermes, pero la entrega y el retorno de respuestas los realiza JOE HQ. Joe acepta este transporte para v1. El transporte nativo completo de Hermes queda para una fase posterior; la configuración global de Hermes no se cambia.
 
 ## Apps (Composio)
 
@@ -61,7 +61,9 @@ Sin llave, la app usa la sesión OAuth existente de Composio que tiene Hermes. E
 
 Ambos préstamos caducan a los **15 minutos**; ese plazo no habilita acciones autónomas. Solo un bot puede tener la computadora a la vez.
 
-Es la pantalla física real de tu Mac, con tus sesiones abiertas. **“Solo ver” bloquea acciones, pero no aísla la información visible por negocio:** el bot puede ver datos de otra app que esté abierta. No hay una pantalla independiente por bot. Antes de prestar la pantalla, cierra u oculta las ventanas que no correspondan a ese negocio.
+**La Mac debe estar desbloqueada.** Con la pantalla bloqueada macOS no deja ver ni tocar nada: la app muestra un aviso rojo y niega todo paso hasta que la desbloquees.
+
+Es la pantalla física real de tu Mac, con tus sesiones abiertas. Joe acepta una pantalla compartida y un bot a la vez para v1. **Durante el préstamo, el bot puede ver las ventanas abiertas, incluso datos de otra app o negocio.** “Solo ver” bloquea acciones; no aísla lo visible. No hay una pantalla independiente por bot; queda para una fase posterior. Antes de prestar la pantalla, cierra u oculta las ventanas que no correspondan a ese negocio.
 
 Claude reportó Accesibilidad y Grabación de Pantalla ya concedidas a Hermes, con una captura real de otras apps. No hace falta volver a activarlas como paso rutinario. Si la vista falla, primero revisa el error del proceso que la solicita.
 
@@ -91,6 +93,8 @@ No se modifica `~/.hermes`. La app lee su sesión Codex sin copiarla.
 |---|---|
 | "el disco JOE_HQ no está conectado" | Conecta el disco y repite el comando. |
 | "JOE HQ ya está corriendo" | Abre http://127.0.0.1:8787. |
+| "La Mac está con la pantalla bloqueada" | Desbloquea la Mac. El bot no puede usar la computadora con la sesión bloqueada. |
+| "Bloqueado: Guardián Ventas y Casa Kiraz no pueden enviarse mensajes…" | Es la regla de v1. Usa Holding con cada negocio por separado; Holding no reenvía de uno al otro. |
 | "Esta pestaña tiene una versión anterior" o ves "Conexiones de…" | Recarga la página (Cmd+R). Tras una actualización la app se recarga sola; una pestaña muy antigua necesita esa recarga manual una vez. |
 | "La sesión OAuth de Composio venció" | Abre Hermes o guarda tu llave en Apps. |
 | "…no está asignado a este negocio" | Asigna la cuenta en Apps → Negocio dueño. |

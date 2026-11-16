@@ -1,0 +1,32 @@
+{
+  "time": "2026-11-15T20:50:44",
+  "http": {
+    "127.0.0.1": {
+      "error": "<urlopen error [Errno 1] Operation not permitted>",
+      "type": "URLError"
+    },
+    "localhost": {
+      "error": "<urlopen error [Errno 1] Operation not permitted>",
+      "type": "URLError"
+    }
+  },
+  "storage_access": {},
+  "data": {
+    "bots": 3,
+    "messages": 8,
+    "accounts": 4
+  },
+  "user_reported_macos_terminal_storage": "listo",
+  "agent_doctor_exit_code": 1,
+  "agent_doctor_storage": "Sin permiso de escritura en /Volumes/JOE_HQ/data. Ejecuta desde Terminal con acceso al volumen.",
+  "listener_pid": 98561,
+  "listener": "127.0.0.1:8787",
+  "instance_stopped": false,
+  "restart_performed": false,
+  "page_open_verified": false,
+  "human_approval_performed": false,
+  "calculator_7_8_verified": false,
+  "automated_tests": 74,
+  "automated_tests_rerun": false,
+  "soul_changed": false
+}

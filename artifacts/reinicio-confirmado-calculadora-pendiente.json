@@ -1,0 +1,28 @@
+{
+  "recorded_at_local": "2026-11-15T21:03:37",
+  "reboot": {
+    "confirmed": true,
+    "version": "0.3.1",
+    "url": "http://127.0.0.1:8787",
+    "sources": [
+      "user confirmation",
+      "local startup log"
+    ],
+    "startup_log": "2026-11-15 20:59:07,899 INFO joe_hq: JOE HQ 0.3.1 iniciado en 127.0.0.1:8787 (ensayo=False)"
+  },
+  "new_http_open_check": false,
+  "calculator_test": {
+    "status": "pending_user_observations",
+    "approval_for_7_confirmed": false,
+    "execution_7_confirmed": false,
+    "new_approval_for_8_confirmed": false,
+    "assistant_approved_any_action": false
+  },
+  "automated_tests": {
+    "previous_total": 74,
+    "rerun": false,
+    "separate_from_live_test": true
+  },
+  "soul_files_checked": 3,
+  "soul_unchanged": true
+}

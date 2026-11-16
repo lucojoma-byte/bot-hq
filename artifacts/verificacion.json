@@ -1,49 +1,55 @@
 {
-  "fecha": "2026-11-15",
-  "version_app_en_codigo": "0.3.1",
-  "baseline_local": "d215586315851fdeea5631a79bd818bfb706dafc",
-  "nuevas_pruebas": {
-    "total": 74,
-    "fallos": 0,
-    "segundos": 2.051,
-    "sin_red": true,
-    "http_en_memoria": true,
-    "log": ".test-runtime/interbot-suite-1794802483391681000.log"
-  },
-  "e2e_real_nuevo": "no ejecutado; bloqueos de entorno documentados",
-  "soul": {
-    "comportamiento_modificado": false,
-    "auditoria_diferida_por_joe": true
-  },
-  "payload_computadora": {
-    "completo": true,
-    "sha256": true,
-    "limite_bytes": 65536,
-    "requiere_digest_en_decision": true,
-    "ui_antigua_falla_cerrada": true
-  },
-  "modos": [
-    "solo ver",
-    "paso a paso"
-  ],
-  "datos_produccion_consulta_solo_lectura": {
-    "bots": 3,
-    "mensajes": 8,
-    "cuentas": 4
-  },
-  "produccion_reiniciada_en_esta_sesion": false,
-  "restricciones_sesion": [
-    "localhost desde terminal bloqueado",
-    "DNS terminal bloqueado",
-    "escritura data/cache/logs fuera app bloqueada",
-    ".git index.lock bloqueado"
-  ],
-  "escrituras_externas_operativas_ejecutadas": 0,
-  "api_modelos_pago_usada": false,
-  "hermes_global_modificado": false,
-  "reporte_sha256": "871c94135c2024d8512f6db7a99f48ff0e1f884657751f44dbf69785c6cccb48",
-  "commits_remotos": [
-    "897a019b1ca60ce7055f8e75797ea1f1dc6f769c",
-    "b1e7678a786d82531a7aa29f88e506902f6f0830"
-  ]
+ "fecha": "2026-11-15T23:40",
+ "version_en_codigo": "0.3.2",
+ "rama_remota_observada": "joe-hq",
+ "commit_remoto_antes_de_esta_conciliacion": "f955924fce8c4189d1c659a4650eff5056bf6878",
+ "commit_local": "d215586315851fdeea5631a79bd818bfb706dafc",
+ "pruebas_automatizadas_locales": {
+  "total": 77,
+  "fallos": 0,
+  "red": false
+ },
+ "validacion_en_vivo": {
+  "url": "http://127.0.0.1:8787",
+  "app_visible_en_chrome": true,
+  "calculadora_7_y_8_aprobaciones_independientes": "confirmado_por_joe",
+  "bots_visibles": 3,
+  "cuentas_registradas_visibles": 4,
+  "drive_leido": true,
+  "google_doc_leido_por_drive_read": true,
+  "sheets_rango_A1_leido": true,
+  "selector_codex_sol_y_restauracion_terra": true,
+  "tts_sintesis_completada": true,
+  "tts_salida_audible": "no_confirmada",
+  "dictado_con_microfono": "pendiente"
+ },
+ "politica_aprobada_por_joe": {
+  "pantalla_compartida_un_bot_a_la_vez": true,
+  "bot_puede_ver_ventanas_abiertas_durante_prestamo": true,
+  "message_agent_entrega_joe_hq": true,
+  "guardian_kiraz_mensajes_y_tareas_directos_bloqueados_en_codigo_local": true,
+  "holding_no_reenvia_en_cadena": true,
+  "gemini_pantalla_independiente_transporte_nativo": "fase_posterior",
+  "soul_auditoria_posterior": true,
+  "imessage": "fase_2"
+ },
+ "parche_bloqueo_hermanos_activo_en_proceso_vivo": true,
+ "reinicio_con_codigo_local": "hecho 23:30; instancia 0.3.1 cerrada con SIGINT estando inactiva",
+ "escrituras_externas_reales": 0,
+ "google_doc_actualizado": true,
+ "api_modelos_pago_usada": false,
+ "hermes_global_modificado": false,
+ "soul_modificado": false,
+ "version_en_proceso_vivo": "0.3.2 (log de arranque 23:30:33)",
+ "e2e_navegador_ensayo": {
+  "hermanos_bloqueados": "8/8",
+  "holding_puente": "3/3 (el bot no intentó reenviar; bloqueo de servidor solo en suite)",
+  "tarea_guardian_holding": "3/3",
+  "guardian_holding_mensaje": "5/5 (antes de 0.3.1)",
+  "solo_ver": "6/6 (0.3.1)",
+  "mac_bloqueada": "5/5 (0.3.2)",
+  "paso_a_paso": "no ejecutable: Mac bloqueada a las 23:25; Joe confirmó 7→8 en vivo en 0.3.1"
+ },
+ "git": "local y remoto conciliados en la rama joe-hq",
+ "incidente": "Claude sobrescribió dos bloques sin commit del guion e2e de Codex (hermanos, puente); reescritos para la política vigente"
 }
