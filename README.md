@@ -41,7 +41,7 @@ Diagnóstico rápido: `bash /Volumes/JOE_HQ/app/iniciar.sh --doctor`
 
 ## Apps (Composio)
 
-1. Pestaña **Apps** → "Credencial de Composio" → pega tu llave de consumidor (`ck_…`) → **Guardar solo en .env**. Se prueba antes de guardarse y queda solo en `app/.env`.
+1. Elige cualquier bot → panel derecho → pestaña **Apps** → primer recuadro, **"Credencial de Composio"** → pega tu llave de consumidor (`ck_…`) → **Guardar solo en .env**. Se prueba antes de guardarse y queda solo en `app/.env`.
 2. En Gmail, Calendar, Instagram y GitHub elige el **Negocio dueño**. Sin asignar, ningún bot las usa.
 3. Drive y Sheets no se asignan: cada negocio ve solo su carpeta (definidas en `drive-folders.json`).
 
@@ -81,6 +81,7 @@ No se modifica `~/.hermes`. La app lee su sesión Codex sin copiarla.
 |---|---|
 | "el disco JOE_HQ no está conectado" | Conecta el disco y repite el comando. |
 | "JOE HQ ya está corriendo" | Abre http://127.0.0.1:8787. |
+| "Esta pestaña tiene una versión anterior" o ves "Conexiones de…" | Recarga la página (Cmd+R). Tras una actualización la app se recarga sola; una pestaña muy antigua necesita esa recarga manual una vez. |
 | "La sesión OAuth de Composio venció" | Abre Hermes o guarda tu llave en Apps. |
 | "…no está asignado a este negocio" | Asigna la cuenta en Apps → Negocio dueño. |
 | El bot no responde | Revisa internet y `logs/joe-hq.log`. |
@@ -89,10 +90,11 @@ No se modifica `~/.hermes`. La app lee su sesión Codex sin copiarla.
 
 ```bash
 cd /Volumes/JOE_HQ/app
-python3 -B -m unittest discover -s tests          # 47 pruebas, sin red ni cuentas reales
+python3 -B -m unittest discover -s tests          # 49 pruebas, sin red ni cuentas reales
 node --check local_web/app.js
 bash iniciar.sh --staging                         # ensayo: puerto 8788, datos en cache/staging
 node tests/e2e/capturas.mjs http://127.0.0.1:8788 /Volumes/JOE_HQ/cache/staging/.staging-password artifacts
+node tests/e2e/llave.mjs …                        # campo de la llave y pestañas viejas en Chrome real (ver cabecera del archivo)
 ```
 
 Rutas fijas que pueden cambiar si actualizas Hermes: `HERMES_PYTHON` en `server.py` y `SOURCE` en `local_engine/hermes_bridge.py`.

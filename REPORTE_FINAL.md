@@ -19,7 +19,7 @@ No se usó ninguna API de modelos de pago. No se modificó `~/.hermes`.
 
 | # | Hallazgo | Resultado | Evidencia |
 |---|---|---|---|
-| 1 | Fork sin commits | **Corregido.** 22 commits de la adaptación en `lucojoma-byte/bot-hq`, rama `joe-hq`. | `git log`; GitHub compara `main...joe-hq`. |
+| 1 | Fork sin commits | **Corregido.** 24 commits de la adaptación en `lucojoma-byte/bot-hq`, rama `joe-hq`. | `git log`; GitHub compara `main...joe-hq`. |
 | 2 | MCP de Composio "falló por DNS" | **Corregido.** No era DNS: el sandbox de la sesión anterior bloqueaba toda la red. En esta Mac resuelve y conecta. | Lecturas reales de las 6 apps. |
 | 3 | VibeVoice no corre | **Corregido.** Faltaba un Python con `torch` y `vibevoice` (el de Hermes no los trae) y el tokenizador se buscaba en internet. | Audio generado y dictado de vuelta. |
 | 4 | Pide contraseña en incógnito | **Se mantiene.** Toda la API responde 401 sin sesión, incluidas las rutas nuevas. | Captura 01; pruebas HTTP. |
@@ -89,7 +89,8 @@ Notas de cada uno:
 
 ## Pruebas
 
-- **47 pruebas unitarias, 0 fallos** (37 anteriores actualizadas más 10 nuevas). Sin red ni cuentas reales.
+- **49 pruebas unitarias, 0 fallos** (37 anteriores actualizadas más 12 nuevas). Sin red ni cuentas reales.
+- **23 verificaciones en Chrome real** del campo de la llave y de las pestañas viejas (ver "Corrección posterior").
 - Sintaxis JavaScript válida. Revisión en Chrome limpio: sin errores de consola salvo el 401 del intento con contraseña incorrecta.
 - Pruebas reales de extremo a extremo en ensayo: Hermes, 6 conectores, mensajes entre bots, computadora, voz.
 
@@ -103,8 +104,40 @@ Notas de cada uno:
 | `artifacts/captura-04-apps-por-negocio.png` | Apps con negocio dueño (correos y usuarios difuminados) |
 | `artifacts/captura-05-aprobaciones.png` | Evento de calendario esperando tu botón |
 | `artifacts/private/06-computadora-paso-pendiente.png` | Pantalla en vivo y paso pendiente. Solo local: muestra tu escritorio |
+| `artifacts/captura-07-pestana-vieja-con-aviso.png` | Pestaña con la interfaz anterior: ahora avisa que recargues |
+| `artifacts/captura-08-campo-llave-en-apps.png` | Apps → "Credencial de Composio", primer recuadro |
+| `artifacts/captura-09-llave-falsa-rechazada.png` | Llave falsa: Composio real la rechaza y no se guarda |
+| `artifacts/captura-10-llave-de-prueba-guardada.png` | Llave de prueba guardada (Composio simulado) |
 
 Todas son del ensayo (banda "ENSAYO"), no de tus conversaciones reales.
+
+## Corrección posterior: "el campo de la llave no existe"
+
+**Lo que pasó.** Joe abrió Apps y no vio el campo. Tenía razón en lo que veía y el error fue mío.
+
+- **Causa.** El campo sí estaba en la app, pero su pestaña seguía ejecutando la interfaz anterior. Al reiniciar el servidor, una pestaña abierta vuelve a pedir contraseña sin recargar el programa. No le dije que recargara y no probé ese camino.
+- **Prueba de la causa.** Los textos que vio ("Conexiones de…", "Conector pendiente de verificación") solo existen en la interfaz anterior. La cargué a propósito contra el servidor actual y obtuve su misma pantalla (captura 07).
+
+**Lo que cambió.**
+
+- La app lleva una huella de versión. Si cambia, la pestaña se recarga sola.
+- Una pestaña demasiado antigua para recargarse sola muestra una barra roja: "Esta pestaña tiene una versión anterior de JOE HQ. Recarga la página (Cmd+R)".
+- "Credencial de Composio" subió al primer recuadro de la pestaña Apps; se ve sin desplazarse.
+- El ensayo usa su propio `.env`; nunca toca el de producción.
+
+**Probado en Chrome real (23 verificaciones, todas pasan).**
+
+| Prueba | Contra qué | Resultado |
+|---|---|---|
+| Llave falsa | Composio real | Rechazada: "NO se guardó". No se creó `.env` |
+| Llave de prueba | Composio simulado en esta Mac | Guardada; estado "Llave propia en .env"; botón "Reemplazar llave"; archivo con permiso 600; la llave no aparece en pantalla ni en logs; persiste al recargar |
+| Pestaña vieja | Servidor actual | Muestra la barra de recarga |
+| Actualización con pestaña abierta | Servidor actual | Se recargó sola y conservó la sesión |
+
+**Límites de esta prueba.**
+
+- El guardado se probó contra un Composio simulado: no tengo una llave real. Que Composio real acepte la llave de Joe se verá cuando él la pegue.
+- Todo se probó en el ensayo. En producción comprobé, sin contraseña, que un Chrome nuevo recibe la interfaz actual con el campo.
 
 ## Pendientes y por qué
 
