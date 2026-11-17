@@ -73,6 +73,7 @@ Claude reportó Accesibilidad y Grabación de Pantalla ya concedidas a Hermes, c
 - En las pruebas previas, la primera frase tardó cerca de un minuto en cargar y las siguientes unos 10 segundos; depende de la memoria y carga de la Mac. El motor se apaga solo tras 10 minutos sin uso.
 - Para una voz en español: guarda un WAV tuyo de 10 a 30 segundos en `/Volumes/JOE_HQ/data/voces/` y elígelo en Apps → Voz local.
 - Si falta el entorno de voz: `bash /Volumes/JOE_HQ/app/instalar_voz.sh`
+- **Estado verificado:** la síntesis termina desde el botón de escucha. Falta confirmar que el audio se oye en las bocinas y completar el dictado por micrófono.
 
 ## Dónde vive cada cosa (todo en el disco JOE_HQ)
 

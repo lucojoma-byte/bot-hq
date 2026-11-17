@@ -1,5 +1,5 @@
 {
- "fecha": "2026-11-15T23:40",
+ "fecha": "2026-11-16T19:20",
  "version_en_codigo": "0.3.2",
  "rama_remota_observada": "joe-hq",
  "commit_remoto_antes_de_esta_conciliacion": "f955924fce8c4189d1c659a4650eff5056bf6878",
@@ -42,14 +42,19 @@
  "soul_modificado": false,
  "version_en_proceso_vivo": "0.3.2 (log de arranque 23:30:33)",
  "e2e_navegador_ensayo": {
-  "hermanos_bloqueados": "8/8",
-  "holding_puente": "3/3 (el bot no intentó reenviar; bloqueo de servidor solo en suite)",
-  "tarea_guardian_holding": "3/3",
-  "guardian_holding_mensaje": "5/5 (antes de 0.3.1)",
-  "solo_ver": "6/6 (0.3.1)",
-  "mac_bloqueada": "5/5 (0.3.2)",
-  "paso_a_paso": "no ejecutable: Mac bloqueada a las 23:25; Joe confirmó 7→8 en vivo en 0.3.1"
+  "version": "0.3.2",
+  "fecha": "2026-11-16",
+  "paso_a_paso": "11/11",
+  "solo_ver": "6/6",
+  "hermanos_bloqueados": "8/8 (el bot llamó ambas herramientas y recibió el 403 del servidor)",
+  "holding_relay": "3/3 (Holding se niega a reenviar aun con autorización; bloqueo de servidor solo en suite)",
+  "barrido_de_fuga": "0 coincidencias en mensajes, dms, tareas, memorias e historial de Holding",
+  "mac_bloqueada": "5/5 (2026-11-15)",
+  "guardian_holding_mensaje": "5/5 (2026-11-15)",
+  "tarea_guardian_holding": "3/3 (2026-11-15)"
  },
  "git": "local y remoto conciliados en la rama joe-hq",
- "incidente": "Claude sobrescribió dos bloques sin commit del guion e2e de Codex (hermanos, puente); reescritos para la política vigente"
+ "incidente": "Claude sobrescribió dos bloques sin commit del guion e2e de Codex (hermanos, puente); reescritos para la política vigente",
+ "fuga_entre_negocios": false,
+ "voz_estado": "en vivo, parcial: síntesis completada; audio en bocinas sin confirmar; dictado por micrófono pendiente"
 }

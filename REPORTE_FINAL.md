@@ -1,74 +1,120 @@
 # JOE HQ — Cierre de v1 local
 
-Actualización: 15/11/2026, 23:40. **App 0.3.2 corriendo en `http://127.0.0.1:8787`.** Rama GitHub `joe-hq`.
+Actualización: 16/11/2026, 19:20. **App 0.3.2 corriendo en `http://127.0.0.1:8787`.** Código en GitHub, rama `joe-hq`.
 
-Alcance aceptado por Joe (sin cambios): una pantalla compartida, un bot a la vez, modos Solo ver / Paso a paso; `message_agent` de Hermes con entrega por JOE HQ; Guardián y Casa Kiraz bloqueados para mensajes y tareas directos; Holding se comunica con cada negocio sin servir de puente. Gemini, pantalla por bot, transporte Hermes nativo completo, auditoría de `SOUL.md` e iMessage quedan para después.
+Alcance aceptado por Joe: una pantalla compartida, un bot a la vez, modos Solo ver / Paso a paso; `message_agent` de Hermes con entrega por JOE HQ; Guardián y Casa Kiraz bloqueados para mensajes y tareas directos; Holding se comunica con cada negocio sin servir de puente. Gemini, pantalla por bot, transporte Hermes nativo completo, auditoría de `SOUL.md` e iMessage quedan para después.
 
-Este cierre lo escribe Claude al retomar el trabajo. Entre mi sesión anterior y esta trabajó Codex (0.3.1: aprobación con huella exacta, bloqueo entre hermanos). Su cierre queda abajo como "Registro anterior — v1.5".
+Este cierre sustituye a los anteriores. Los registros previos (Claude y Codex) siguen más abajo y en `artifacts/anterior/`.
 
-## Qué cambió en este cierre
+## Dictamen
 
-| Asunto | Estado |
-|---|---|
-| Bloqueo Guardián ↔ Casa Kiraz en el proceso vivo | **Activo.** Producción se reinició a las 23:30 con la 0.3.2 (log de arranque). El reporte anterior lo tenía pendiente. |
-| Pruebas en navegador de hermanos, puente y tareas | **Ejecutadas** en Chrome real contra el ensayo (mismo código). Detalle abajo. |
-| Mac bloqueada | **Nuevo en 0.3.2.** La app detecta la pantalla de bloqueo, lo avisa en rojo y niega todo paso. |
-| Git local y remoto | **Conciliados.** El checkout local ya parte de `f955924`; los cambios nuevos están en commits normales. |
-| Google Doc de auditoría | **Actualizado** con este cierre, por la instrucción de Joe de actualizarlo al terminar. |
+**Sin fuga de datos entre negocios y sin nada roto.** Las tres piezas pedidas están verificadas de extremo a extremo en navegador real. Voz queda en estado parcial.
 
-## Evidencia por tipo
-
-### Probado en Chrome real, con Hermes real (ensayo 8788)
-
-| Escenario | Resultado | Qué se vio |
+| Pieza | Estado | Evidencia |
 |---|---|---|
-| Guardián ↔ Casa Kiraz | 8/8 | Casa Kiraz aparece deshabilitada como destino ("bloqueado · negocios separados"). La ruta de la interfaz devuelve 403 en ambos sentidos. No se creó mensaje, tarea ni aprobación. |
-| Holding como puente | 3/3 | Holding recibió la respuesta de Guardián y nada llegó a Casa Kiraz. |
-| Tarea Guardián → Holding | 3/3 | Aparece en Tareas de Holding "asignada por Guardián Ventas" y Holding la cerró. |
-| Guardián ↔ Holding, mensaje | 5/5 | Pregunta entregada, Holding respondió y la respuesta volvió sola. Corrida anterior a la 0.3.1; esa ruta no cambió. |
-| Solo ver | 6/6 | Clic, texto, Return y clic por coordenadas bloqueados; solo corrió la captura. Corrido en 0.3.1. |
-| Mac bloqueada | 5/5 | Aviso rojo en la interfaz; captura y tecla negadas; ningún paso ofrecido. Corrido en 0.3.2. |
+| Control real de pantalla, mouse y teclado | **Verificado** | Paso a paso 11/11 en Chrome real (0.3.2). Joe confirmó en producción el clic 7→8 (0.3.1). |
+| "Prestar · solo ver" endurecido | **Verificado** | 6/6 en Chrome real (0.3.2). |
+| Mensajería entre bots | **Verificado, con un matiz** | Guardián↔Casa Kiraz 8/8; Holding como relay 3/3; barrido de fuga en cero. Matiz en "Mensajería". |
+| Voz | **En vivo, parcial** | Síntesis completada; audio en bocinas sin confirmar; dictado por micrófono pendiente. |
 
-Matices que no quiero que se pierdan:
+## Computadora del agente
 
-- **Hermanos.** En la última corrida el bot se negó por sí mismo a llamar la herramienta, así que ahí no se ejerció el servidor. Sí se ejerció en la ruta de la interfaz (403) y en una corrida previa donde el bot llamó y recibió "Bloqueado: Guardián Ventas y Casa Kiraz no pueden enviarse mensajes ni tareas directamente".
-- **Puente.** Holding tampoco intentó reenviar. El bloqueo del servidor para esa cadena está probado solo en la suite automatizada.
+Pruebas del 16/11 en Chrome real, con Hermes real, contra el ensayo (puerto 8788, mismo código que producción), usando la Calculadora.
 
-### Confirmado por Joe en producción
+**Paso a paso — 11/11**
 
-- Paso a paso: clic en 7 ejecutado; el clic en 8 pidió un Permitir nuevo (0.3.1).
-- Llave de Composio propia, cuentas asignadas a Guardián, chat, dictado y voz.
+- La tarjeta dijo qué se iba a tocar: "Clic en botón «7» · app Calculator · ventana «Calculadora»".
+- Pulsé **Negar**: no se ejecutó ningún clic y el bot lo informó.
+- Pulsé **Permitir** paso por paso: se ejecutaron la tecla Escape y el clic en 7, nada más.
+- Una captura posterior, aparte, mostró "7".
+- **Tomar control** devolvió el control.
 
-### Solo pruebas automatizadas
+**Solo ver — 6/6**
 
-- **77/77** pasan (sin red, sin modelos, sin acciones reales). Incluyen huella exacta del paso, modos, bloqueo entre hermanos, puente, tareas y Mac bloqueada.
+- El bot intentó de verdad: clic en el botón 7, escribir "123", tecla Return y un clic por coordenadas.
+- Los cuatro quedaron bloqueados. Solo se ejecutó la captura.
+- Nunca se ofreció un botón de permitir en este modo.
 
-### No probado
+**Mac bloqueada — 5/5 (15/11)**
 
-| Pendiente | Motivo |
+- Con la pantalla de macOS bloqueada el driver no ve elementos ni entrega teclas.
+- Desde la 0.3.2 la app lo detecta, lo avisa en rojo y niega todo paso.
+
+**Permisos de macOS:** Accesibilidad y Grabación de Pantalla ya estaban concedidos. No hubo que activar nada.
+
+**Límite aceptado:** es la pantalla física. Durante el préstamo el bot ve todas las ventanas abiertas, incluidas las de otro negocio.
+
+## Mensajería entre bots
+
+**Guardián ↔ Casa Kiraz directo — 8/8, bloqueado**
+
+- En el formulario, Casa Kiraz aparece deshabilitada: "bloqueado · negocios separados".
+- La ruta de la interfaz devuelve 403 en ambos sentidos.
+- El bot de Guardián llamó `message_agent` y `assign_task` hacia Casa Kiraz y recibió del servidor: "Bloqueado: Guardián Ventas y Casa Kiraz no pueden enviarse mensajes ni tareas directamente".
+- No se creó mensaje, tarea ni aprobación.
+
+**Holding como relay — 3/3, nada cruzó**
+
+- Holding pidió un dato a Guardián y lo recibió.
+- Nada llegó a Casa Kiraz.
+- **Matiz:** Holding se negó a reenviar por sí mismo, incluso cuando se lo pedí con autorización explícita. Por eso el bloqueo del servidor para esa ruta no se ejerció desde un bot; está probado solo en la suite automatizada.
+
+**Barrido de fuga después de las pruebas (base y memorias del ensayo)**
+
+| Búsqueda | Resultado |
 |---|---|
-| Paso a paso en 0.3.2, en navegador | Lo intenté a las 23:25 y falló porque la Mac estaba bloqueada: 0 elementos y teclas sin entregar. No es defecto del código. Repetir con la Mac desbloqueada: `node tests/e2e/control_y_mensajes.mjs … paso`. |
-| Cualquier cosa en la sesión de producción de Joe | No tengo su contraseña. Comprobé arranque, página 200 y API 401. |
-| Dictado con micrófono, sonido audible | Igual que en el cierre anterior. |
-| Primera escritura externa real desde un bot | Requiere el botón de Joe. |
+| Dato trampa de Casa Kiraz en mensajes de bots de Guardián | 0 |
+| Dato trampa de Guardián o marcadores de prueba en bots de Casa Kiraz | 0 |
+| Mensajes directos registrados entre Guardián y Casa Kiraz | 0 |
+| Tareas cruzadas entre ambos | 0 |
+| Archivos de memoria o biblioteca de un negocio con dato del otro | 0 |
+| Respuesta de Guardián guardada en el historial de Holding | 0 |
 
-## Estado de producción
+**Rutas permitidas, probadas el 15/11:** Guardián↔Holding mensaje 5/5; tarea Guardián→Holding 3/3 (aparece "asignada por Guardián Ventas" y Holding la cerró).
 
-- 0.3.2 iniciada a las 23:30. La instancia anterior (0.3.1, 20:59) se cerró con la señal equivalente a Control+C; estaba inactiva desde las 21:54.
-- Datos conservados: 3 bots, 22 mensajes, 4 cuentas. Respaldo: `backups/joe-hq-antes-0.3.2.sqlite3`.
-- Corre en segundo plano, ya no en la Terminal de Joe. Para detenerla: `kill -INT $(lsof -nP -iTCP:8787 -sTCP:LISTEN -t)`. Para arrancarla: `bash /Volumes/JOE_HQ/app/iniciar.sh`.
-- Hay que volver a entrar; la pestaña se recarga sola.
+**Límite:** el servidor bloquea por ruta y por cadena de mensajes. No lee el significado de cada texto: lo que un bot escribe a Holding no se revisa por máquina.
 
-## Un error mío en esta sesión
+## Voz
 
-Al retomar, edité `tests/e2e/control_y_mensajes.mjs` sin revisar antes si el árbol había cambiado. Sobrescribí dos bloques que Codex tenía sin commit (escenarios "hermanos" y "puente"). No tocó código de la app. Reescribí ambos para la política vigente y son los que produjeron los resultados de arriba. La versión exacta de Codex de esos dos bloques no se recuperó.
+| Parte | Estado |
+|---|---|
+| Voz de salida (VibeVoice) | **En vivo, parcial.** La síntesis terminó desde el botón de escucha y el control volvió a habilitarse. No está confirmado que el audio se haya escuchado en las bocinas. |
+| Dictado por micrófono | **Pendiente.** No se completó. |
+| Ida y vuelta por API (15/11) | VibeVoice generó audio y faster-whisper lo transcribió casi literal. No prueba micrófono ni bocinas. |
+
+Este estado lo registró la sesión de Codex y se conserva tal cual. Evidencia: `artifacts/verificacion.json` (`tts_sintesis_completada: true`, `dictado_con_microfono: pendiente`).
+
+## Pruebas automatizadas
+
+**77/77** pasan. Sin red, sin modelos reales y sin acciones externas. Cubren huella exacta del paso, modos, Mac bloqueada, bloqueo entre hermanos, puente y tareas.
+
+## Producción
+
+- 0.3.2 en marcha desde el 15/11 a las 23:30. Página 200; API 401 sin contraseña.
+- Datos conservados: 3 bots y 4 cuentas asignadas. Respaldo: `backups/joe-hq-antes-0.3.2.sqlite3`.
+- Corre en segundo plano. Tras reiniciar la Mac: `bash /Volumes/JOE_HQ/app/iniciar.sh`.
+- No probé nada dentro de la sesión de Joe: no tengo su contraseña.
 
 ## Escrituras externas
 
 - Desde los bots: **0**. Sin correos, eventos, publicaciones, filas ni borrados.
-- Desde esta sesión: el Google Doc de auditoría y los commits a GitHub, ambos pedidos por Joe.
+- Desde esta sesión: este Google Doc y el commit a GitHub, ambos pedidos por Joe.
 
 No se modificó `SOUL.md`, `~/.hermes` ni configuración global. No hay credenciales en este reporte.
+
+## Pendiente
+
+| Pendiente | Motivo |
+|---|---|
+| Confirmar que la voz se oye en bocinas | Requiere a Joe frente a la Mac. |
+| Dictado por micrófono | No se completó en vivo. |
+| Primera escritura externa real desde un bot | Requiere el botón de Joe. |
+| Bloqueo del servidor para Holding como relay, ejercido por un bot | El bot se niega antes; cubierto por la suite. |
+| Auditoría de `SOUL.md`, pantalla por bot, transporte nativo de Hermes, Gemini, iMessage | Diferidos por decisión de Joe. |
+
+## Nota de proceso
+
+El 15/11, al retomar, edité el guion `tests/e2e/control_y_mensajes.mjs` sin revisar antes el árbol y sobrescribí dos bloques sin commit de Codex. No tocó código de la app. Los reescribí para la política vigente; son los que produjeron los resultados de arriba.
 
 ---
 

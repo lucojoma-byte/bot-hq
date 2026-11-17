@@ -102,9 +102,9 @@ if (scenario === 'ver') {
   let c = await computer();
   check('negado en la interfaz → no se ejecutó ningún clic', !c.events.some(e => e.ok && e.action === 'click'), c.events.map(e => `${e.action}:${e.ok}`).join(','));
   const deniedReply = await lastAssistant('guardian');
-  check('el bot informa que fue negado', deniedReply?.status === 'completo' && /negad|deneg|rechaz|no autoriz|no permit|no aprob|no diste|sin permiso|no se (?:ejecut|realiz)|no (?:hice|pude)/i.test(deniedReply.text), deniedReply?.text);
+  check('el bot informa que fue negado', deniedReply?.status === 'completo' && /negad|neg[oó](?![a-z])|deneg|rechaz|no autoriz|no permit|no aprob|no diste|sin permiso|no se (?:ejecut|realiz)|no (?:hice|pude)/i.test(deniedReply.text), deniedReply?.text);
   // 2) Joe PERMITE en la interfaz, paso por paso
-  await send('Ahora sí: en Calculator pulsa la tecla escape para limpiar y luego haz clic en el botón 7. Después lee la pantalla con capture y dime el número que muestra.');
+  await send('Ahora sí: en Calculator pulsa la tecla escape para limpiar y luego haz clic en el botón 7. Después, en una llamada APARTE, usa computer_use capture con app Calculator (no te bases en la captura automática del clic) y dime el número que muestra.');
   seen = [];
   run = await waitIdle(['guardian'], { onStep: async () => {
     seen.push((await page.locator('#step-what').textContent()).trim());
